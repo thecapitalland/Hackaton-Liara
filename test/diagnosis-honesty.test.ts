@@ -4,7 +4,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildLlmPrompt, stripBugMode } from "../src/diagnose/llm.js";
-import { DIAGNOSIS_IGNORED_ENV_KEYS } from "../src/tools/composite.js";
 import type { Evidence, Hypothesis } from "../src/types.js";
 
 const evidence: Evidence[] = [
@@ -54,11 +53,6 @@ test("BUG_MODE و مقدار حالت از پرامپت LLM حذف می‌شون
 test("stripBugMode متن عادی را دست‌نخورده نگه می‌دارد", () => {
   assert.equal(stripBugMode("سایت کند است و خطا می‌دهد"), "سایت کند است و خطا می‌دهد");
   assert.equal(stripBugMode("BUG_MODE=leak"), "");
-});
-
-test("کلیدهای env کنترل‌کننده از تشخیص کنار گذاشته می‌شوند", () => {
-  assert.ok(DIAGNOSIS_IGNORED_ENV_KEYS.includes("BUG_MODE"));
-  assert.ok(DIAGNOSIS_IGNORED_ENV_KEYS.includes("ADMIN_KEY"));
 });
 
 test("پرامپت فقط اجزای مجاز را دارد", () => {

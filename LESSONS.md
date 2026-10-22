@@ -88,10 +88,10 @@
 
 ### اصلاح
 - `config.demoBugMode` (getter خواندن `BUG_MODE`) حذف شد.
-- `DIAGNOSIS_IGNORED_ENV_KEYS = ["BUG_MODE","ADMIN_KEY"]` در `gatherDiagnosis` اعمال شد؛ این کلیدها نه در شواهد env و نه در پرامپت LLM نمی‌آیند.
+- `gatherDiagnosis` دیگر env را نمی‌خواند: نه مقدار و نه فهرست کلیدها؛ `env:null` به detectorها می‌رود. فقط `plan` برای آستانهٔ CPU از متادیتای اپ خوانده می‌شود. در نتیجه `missing_env` فقط بر پایهٔ لاگ کار می‌کند.
 - `stripBugMode()` هر اشارهٔ `BUG_MODE=...` یا `bugMode: ...` را از متن پرامپت LLM حذف می‌کند.
 - `buildLlmPrompt()` جدا و export شد تا پرامپت دقیق قابل مشاهده و تست باشد.
-- `diagnose` در خروجی `diagnosisInputExcludes:["BUG_MODE","health.body"]` و `diagnosisIgnoredEnvKeys` را برمی‌گرداند.
+- `diagnose` در خروجی `diagnosisInputExcludes:["env","BUG_MODE","health.body"]` را برمی‌گرداند.
 - تست‌های `test/diagnosis-honesty.test.ts` تأیید می‌کنند نه `BUG_MODE` و نه مقدار حالت (`error500`) به پرامپت نمی‌رسد؛ متن عادی symptom حفظ می‌شود.
 
 ### محدودیت باقی‌مانده

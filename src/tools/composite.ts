@@ -341,12 +341,6 @@ export function dominantErrorPattern(logs: LogLine[]): { pattern: string; count:
   return null;
 }
 
-/**
- * کلیدهایی که عمداً از ورودی تشخیص حذف می‌شوند تا حالت تزریق‌شده
- * (BUG_MODE) و کلید مدیریت، تحلیل را هدایت نکنند.
- */
-export const DIAGNOSIS_IGNORED_ENV_KEYS = ["BUG_MODE", "ADMIN_KEY"] as const;
-
 interface DiagnosisBundle {
   incidentId: string;
   app: string;
@@ -416,31 +410,19 @@ async function gatherDiagnosis(app: string, symptom?: string): Promise<Diagnosis
   const probe = await httpProbe(app, { path: "/", count: 3 });
   if ("error" in probe) notes.push(probe.error);
 
-  /* متغیرهای محیطی */
-  let env: { defined: string[]; required: string[] } | null = null;
+  /*
+   * env عمداً خوانده نمی‌شود: نه مقدار BUG_MODE و نه فهرست کلیدها.
+   * فقط plan برای آستانهٔ CPU از متادیتای اپ گرفته می‌شود.
+   */
   let plan: PlanLimits | null = null;
   try {
     const res = await liaraGet<Record<string, unknown>>(EP.getProject(app));
     const obj = (res.data?.project ?? res.data ?? {}) as Record<string, unknown>;
-    const envs = obj["envs"];
-    const defined = Array.isArray(envs)
-      ? envs.map((e) =>
-          e && typeof e === "object" ? String((e as Record<string, unknown>)["key"] ?? "") : String(e),
-        )
-      : [];
     const currentPlanID = String(obj["plan"] ?? obj["planID"] ?? "");
     plan = currentPlanID ? planFromProject(obj, currentPlanID) : null;
-    const ignored = new Set<string>(DIAGNOSIS_IGNORED_ENV_KEYS);
-    env = {
-      defined: defined.filter((key) => key && !ignored.has(key.toUpperCase())),
-      required: [],
-    };
   } catch {
-    notes.push("اطلاعات اپ (متغیرها/پلن) در دسترس نبود.");
+    notes.push("اطلاعات پلن اپ در دسترس نبود.");
   }
-
-  // Do not confuse the MCP server's own .env keys with those of the remote app.
-  if (env) env.required = [...new Set(logs.flatMap(l => [...l.message.matchAll(/(?:missing env(?: variable)?\s+|ENV\s+)([A-Z][A-Z0-9_]+)/g)].map(m => m[1]!)))];
 
   const detectionResult = detectCauses({
     app,
@@ -449,7 +431,7 @@ async function gatherDiagnosis(app: string, symptom?: string): Promise<Diagnosis
     cpu,
     memory,
     probe: "error" in probe ? null : probe,
-    env,
+    env: null,
     plan,
     collectedAt: observedAt,
   });
@@ -472,7 +454,7 @@ async function gatherDiagnosis(app: string, symptom?: string): Promise<Diagnosis
     cpu,
     memory,
     probe,
-    env,
+    env: null,
     plan,
     evidence: detectionResult.evidence,
     hypotheses: llm.hypotheses,
@@ -713,7 +695,7 @@ export function registerCompositeTools(server: McpServer): void {
           ? `🧠 منبع تحلیل: LLM (${config.llmModel}) — علت‌ها از detectorهای قانونی، رتبه‌بندی با LLM`
           : `🧠 منبع تحلیل: fallback قانون‌محور${bundle.llmNote ? ` — ${bundle.llmNote}` : ""}`;
         const inputLine =
-          "🧾 ورودی تشخیص: لاگ، متریک، رویدادها و پروب HTTP؛ BUG_MODE و بدنهٔ /health استفاده نمی‌شوند.";
+          "🧾 ورودی تشخیص: لاگ، متریک، رویدادها و پروب HTTP؛ env و بدنهٔ /health استفاده نمی‌شوند.";
         const text = `${analysisLine}\n${inputLine}\n${formatIncident(report, bundle.notes)}`;
         return result(text, {
           ok: true,
@@ -721,8 +703,7 @@ export function registerCompositeTools(server: McpServer): void {
           llmUsed: bundle.llmUsed,
           llmNote: bundle.llmNote,
           llmModel: bundle.llmUsed ? config.llmModel : undefined,
-          diagnosisInputExcludes: ["BUG_MODE", "health.body"],
-          diagnosisIgnoredEnvKeys: [...DIAGNOSIS_IGNORED_ENV_KEYS],
+          diagnosisInputExcludes: ["env", "BUG_MODE", "health.body"],
           ...report,
           incident: report,
         } as unknown as Record<string, unknown>);
