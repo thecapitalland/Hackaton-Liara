@@ -50,6 +50,7 @@ flowchart LR
 | `LLM_API_KEY`, `LLM_MODEL` | هر سه مقدار لازم‌اند؛ در غیر این صورت rules-only |
 | `ADMIN_KEY` | کلید پنل آزمایش سایت دمو؛ بدون آن پنل بسته است |
 | `BUG_MODE` | حالت اولیهٔ سایت دمو: `off`, `leak`, `slow`, `error500` |
+| `APPROVAL_POLICY` | `strict` (پیش‌فرض)، `balanced` یا `auto`؛ جزئیات در بخش «سیاست تأیید» |
 
 اولویت: محیط کلاینت > `.env` در cwd > `.env` در ریشهٔ پکیج. سرور را با cwd همین مخزن اجرا کنید تا approval CLI و preflight از state مشترک استفاده کنند. `.env`، `.agate`، `node_modules` و `dist` gitignored هستند.
 
@@ -58,7 +59,7 @@ flowchart LR
 | سطح | ابزارها |
 |---|---|
 | A: خواندنی | `ping`, `liara_status`, `liara_list_apps`, `liara_logs`, `liara_metrics`, `liara_events`, `liara_plans`, `liara_releases`, `http_probe`, `audit_tail`, `liara_plan_price`, `liara_release_status` |
-| B: تأیید لازم | `liara_create_app`, `liara_deploy`, `liara_set_env`, `liara_restart`, `liara_scale`, `liara_resize`, `liara_add_domain`, `liara_enable_ssl`, `propose_action`, `execute_action` |
+| B: نوشتنی (مطابق `APPROVAL_POLICY`) | `liara_create_app`, `liara_deploy`, `liara_set_env`, `liara_restart`, `liara_scale`, `liara_resize`, `liara_add_domain`, `liara_enable_ssl`, `propose_action`, `execute_action` |
 | ترکیبی | `deploy_project`, `diagnose`, `apply_fix`, `verify_fix`, `connect_domain`, `watch_after_deploy` |
 | C: راهنما | `guide_domain_registration`, `guide_rollback`, `guide_github_deploy` |
 
@@ -95,6 +96,25 @@ npm run approve -- <approvalId>
 ```
 
 خلاصه و هش را بررسی و `yes` وارد کنید؛ پاسخ دیگر لغو است. سپس ایجنت `execute_action(approvalId)` را صدا می‌زند. ایجنت نباید خودکار به جای انسان CLI تأیید را اجرا کند. شناسه به پارامترها مقید، ۱۰دقیقه‌ای و تک‌مصرف است. اگر نتیجهٔ write مبهم شد، قبل از پیشنهاد مجدد وضعیت را بخوانید. state محلی برای یک فرایند MCP طراحی شده است، نه چند executor همزمان.
+
+### سیاست تأیید
+
+مقدار `APPROVAL_POLICY` در `.env` تعیین می‌کند چه اقدام‌های نوشتنی کادر تأیید بخواهند. تصمیم‌گیری فقط در تابع `decideApproval` در [`src/approval.ts`](src/approval.ts) انجام می‌شود و هر اقدام یک `riskLevel` از نوع `low` / `medium` / `high` دارد.
+
+| سیاست | رفتار |
+|---|---|
+| `strict` (پیش‌فرض) | همهٔ اقدام‌های نوشتنی تأیید انسانی می‌خواهند؛ رفتار قبلی. |
+| `balanced` | اقدام‌های `low` و برگشت‌پذیر خودکار اجرا می‌شوند: `restart`، برگرداندن `BUG_MODE=off`، SSL و خواندن لاگ/متریک. تغییر env دیگر، دیپلوی/release جدید و اقدام‌های `medium` تأیید می‌خواهند. |
+| `auto` | همهٔ اقدام‌های `low` و `medium` خودکار هستند؛ فقط `high` تأیید می‌خواهد. |
+
+در **همهٔ** سیاست‌ها، اقدام‌های پرخطر یا هزینه‌دار همیشه تأیید می‌خواهند: ساخت اپ/شبکه، تغییر پلن، خاموش‌کردن سرویس، حذف و هر عملیاتی که هزینهٔ اضافه ایجاد کند. این فهرست در `ALWAYS_APPROVAL_KINDS` و به‌صورت risk سطح `high` نگه‌داری می‌شود؛ نبودِ یک اقدام در فهرست به معنی خودکار بودن آن نیست، بلکه ریسک اعلام‌شدهٔ آن ملاک است.
+
+اجرای خودکار در خروجی با عبارت دقیق «اجرای خودکار طبق سیاست balanced» (یا `auto`) و در `.agate/audit.jsonl` با مقدار `approval: "auto:balanced"` ثبت می‌شود. خواندن لاگ و متریک اساساً ابزار فقط‌خواندنی است و هیچ‌گاه تأیید نمی‌خواهد. `propose_action` همچنان عمداً یک درخواست معلق می‌سازد؛ برای اجرای خودکار باید ابزار مستقیم (مثل `liara_restart`) صدا زده شود. مقدار ناشناخته در `APPROVAL_POLICY` امن‌ترین حالت، یعنی `strict`، را فعال می‌کند.
+
+```dotenv
+# .env
+APPROVAL_POLICY=balanced
+```
 
 ## اتصال MCP در IDE
 

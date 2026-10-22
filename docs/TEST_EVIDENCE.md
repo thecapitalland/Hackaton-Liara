@@ -77,3 +77,16 @@ The build guard exists because a stale `dist` re-sent the old `build.location:".
 | Build log evidence | PASS | `up to date in 1s` at 16:14:10; `Successfully built` at 16:14:19; push 100% at 16:14:31 |
 
 The earlier `timeout` was client-side: `releaseState()` did not unwrap `data.release`. Build logs without `since` return only the oldest 20 lines, so the tail appeared stuck at `Running npm install...`. Details: `LESSONS.md`. No new release was created during this verification.
+
+## 2026-10-22 — configurable approval policy
+
+| Check | Result | Evidence |
+|---|---|---|
+| `npm run typecheck` | PASS | `tsc --noEmit` |
+| `npm test` | PASS | **55/55**; includes strict/balanced/auto matrix, `BUG_MODE=off`, high-risk override, and audit `auto:balanced` |
+| `APPROVAL_POLICY` default | PASS | absent/invalid → `strict`; `.env.example` documents all three values |
+| `balanced` low-risk path | PASS (unit) | `restart` and `BUG_MODE=off` → automatic with «اجرای خودکار طبق سیاست balanced» |
+| High-risk override | PASS (unit) | create app/network, resize, scale remain `high` and require approval in every policy |
+| Audit trail | PASS (unit) | `.agate/audit.jsonl` entry records `approval:"auto:balanced"` and the policy notice |
+
+No live provider write was performed for these policy tests. The leak scenario's `BUG_MODE=off` was separately approved by the owner and is verified by `/health` (`bugMode:"off"`, `extMB` stable at 3.5MB).

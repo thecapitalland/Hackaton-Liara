@@ -13,6 +13,10 @@ import dotenv from "dotenv";
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const PACKAGE_ROOT = path.resolve(here, "..");
 
+/** سیاست تأیید عملیات نوشتنی */
+export type ApprovalPolicy = "strict" | "balanced" | "auto";
+export const APPROVAL_POLICIES: readonly ApprovalPolicy[] = ["strict", "balanced", "auto"];
+
 /**
  * بارگذاری `.env`:
  *  1) از ریشه پکیج (توسعه: src/.. ، بیلد: dist/..)
@@ -114,6 +118,16 @@ export const config = {
   /** حالت دمو سایت: off | leak | slow | error500 */
   get demoBugMode(): string {
     return str("BUG_MODE", "off");
+  },
+  /**
+   * سیاست تأیید: strict (پیش‌فرض) | balanced | auto.
+   * مقدار ناشناخته امن‌ترین حالت (strict) را فعال می‌کند.
+   */
+  get approvalPolicy(): ApprovalPolicy {
+    const raw = str("APPROVAL_POLICY", "strict").toLowerCase();
+    return (APPROVAL_POLICIES as readonly string[]).includes(raw)
+      ? (raw as ApprovalPolicy)
+      : "strict";
   },
   /** آیا لاگ با جزئیات بیشتری نوشته شود؟ */
   get verbose(): boolean {

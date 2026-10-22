@@ -83,7 +83,6 @@ export async function rankWithLlm(args: {
       },
       body: JSON.stringify({
         model: config.llmModel,
-        temperature: 0,
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },

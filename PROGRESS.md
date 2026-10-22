@@ -81,3 +81,16 @@
 - Package facts: uploaded archive was demo-site only — 5 files, 11,843 bytes, SHA-256 `30dab33e…c6ebf2`, zero dependencies/devDependencies, no lockfile. Root repo deps/lockfile were not uploaded.
 - Details and recommendations are in `LESSONS.md`.
 - Owner decision: **no new release**. The current `READY` deployment is accepted; no upload/release or any other provider write was performed for this decision.
+
+## Leak scenario · 2026-10-22 21:38–22:32 (+03:30)
+- Owner approved one `BUG_MODE=leak` env write (approval `c7ff03ed-…`); service restarted and leak became active.
+- 30 HTTP probes (`/`, `/api/challenges`, `/api/status`, 10 each) returned 200; homepage p50 **2124ms**.
+- Health: `extMB` grew **8.5MB → 473.5MB** in ~95s; Liara events showed **3× oom** plus `die`/`start` restart cycles.
+- `diagnose` used the real LLM (`analysisSource:"llm"`, `gpt-5-mini`): top cause **OOM/leak 88%**, second slow responses 45%. Metrics CPU/memory series were unavailable (503); logs API returned no app logs. Details in `LESSONS.md`.
+- Owner approved the fix `BUG_MODE=off` (approval `c766a014-…`, one write). Post-fix: four health samples over 60s showed `bugMode:"off"`, `extMB` stable **3.5MB**, `rssMB` ~53.7MB, uptime increasing; no new OOM. Leak resolved.
+- Slow and error500 scenarios remain pending; requiring fresh approvals.
+
+## Configurable approval policy · 2026-10-22
+- Added `APPROVAL_POLICY` (`strict` default, `balanced`, `auto`) and a single `decideApproval()` in `src/approval.ts`. Risk is `low|medium|high`; high-risk/costly actions always require approval.
+- `balanced`: `restart` and `BUG_MODE=off` auto; other env changes/releases require approval. `auto`: low/medium auto.
+- Automatic runs include «اجرای خودکار طبق سیاست …» and are audited as `auto:<policy>`. `npm test` **55/55** PASS; typecheck PASS. No live provider write for policy tests.

@@ -292,9 +292,15 @@ export function registerReadTools(server: McpServer): void {
     async ({ app, sinceMinutes }) =>
       audited("liara_metrics", app, { app, sinceMinutes }, async () => {
         const results = await Promise.allSettled([
-          liaraGet<unknown>(EP.metricsCpu(app), { query: { since: sinceMinutes } }),
-          liaraGet<unknown>(EP.metricsMemory(app), { query: { since: sinceMinutes } }),
-          liaraGet<unknown>(EP.metricsSummary(app), { query: { since: sinceMinutes } }),
+          liaraGet<unknown>(EP.metricsCpu(app), {
+            query: { since: Date.now() - sinceMinutes * 60_000 },
+          }),
+          liaraGet<unknown>(EP.metricsMemory(app), {
+            query: { since: Date.now() - sinceMinutes * 60_000 },
+          }),
+          liaraGet<unknown>(EP.metricsSummary(app), {
+            query: { since: Date.now() - sinceMinutes * 60_000 },
+          }),
         ]);
 
         const pick = (i: number): unknown => {

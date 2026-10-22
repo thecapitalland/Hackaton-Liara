@@ -355,6 +355,8 @@ interface DiagnosisBundle {
   evidence: Evidence[];
   hypotheses: Hypothesis[];
   notes: string[];
+  llmUsed: boolean;
+  llmNote?: string;
 }
 
 async function gatherDiagnosis(app: string, symptom?: string): Promise<DiagnosisBundle> {
@@ -396,8 +398,8 @@ async function gatherDiagnosis(app: string, symptom?: string): Promise<Diagnosis
   let cpu: Series | null = null;
   let memory: Series | null = null;
   const [cpuRes, memRes] = await Promise.allSettled([
-    liaraGet<unknown>(EP.metricsCpu(app), { query: { since: 30 } }),
-    liaraGet<unknown>(EP.metricsMemory(app), { query: { since: 30 } }),
+    liaraGet<unknown>(EP.metricsCpu(app), { query: { since: Date.now() - 30 * 60_000 } }),
+    liaraGet<unknown>(EP.metricsMemory(app), { query: { since: Date.now() - 30 * 60_000 } }),
   ]);
   if (cpuRes.status === "fulfilled") cpu = parseSeries(cpuRes.value.data, "cpu", "%");
   else notes.push("متریک CPU در دسترس نبود.");
@@ -465,6 +467,8 @@ async function gatherDiagnosis(app: string, symptom?: string): Promise<Diagnosis
     evidence: detectionResult.evidence,
     hypotheses: llm.hypotheses,
     notes,
+    llmUsed: llm.usedLlm,
+    llmNote: llm.note,
   };
 }
 
@@ -695,8 +699,19 @@ export function registerCompositeTools(server: McpServer): void {
           errorsSeen: errPattern?.count ?? 0,
         });
 
-        const text = formatIncident(report, bundle.notes);
-        return result(text, { ok: true, ...report, incident: report } as unknown as Record<string, unknown>);
+        const analysisLine = bundle.llmUsed
+          ? `🧠 منبع تحلیل: LLM (${config.llmModel}) — علت‌ها از detectorهای قانونی، رتبه‌بندی با LLM`
+          : `🧠 منبع تحلیل: fallback قانون‌محور${bundle.llmNote ? ` — ${bundle.llmNote}` : ""}`;
+        const text = `${analysisLine}\n${formatIncident(report, bundle.notes)}`;
+        return result(text, {
+          ok: true,
+          analysisSource: bundle.llmUsed ? "llm" : "rules",
+          llmUsed: bundle.llmUsed,
+          llmNote: bundle.llmNote,
+          llmModel: bundle.llmUsed ? config.llmModel : undefined,
+          ...report,
+          incident: report,
+        } as unknown as Record<string, unknown>);
       } catch (err) {
         return result(`❌ تشخیص ناموفق بود: ${(err as Error).message}`, { ok: false });
       }
@@ -823,8 +838,8 @@ export function registerCompositeTools(server: McpServer): void {
       if (!baseline || baseline.incidentId !== incidentId) return result('❌ baseline متناظر رخداد پیدا نشد؛ diagnose را اجرا کنید.', { ok: false });
       const probe = await httpProbe(app, { path: new URL(baseline.probe.url || `https://${app}.liara.run/`).pathname, count: 3 });
       const [cpuRes, memRes] = await Promise.allSettled([
-        liaraGet<unknown>(EP.metricsCpu(app), { query: { since: 15 } }),
-        liaraGet<unknown>(EP.metricsMemory(app), { query: { since: 15 } }),
+        liaraGet<unknown>(EP.metricsCpu(app), { query: { since: Date.now() - 15 * 60_000 } }),
+        liaraGet<unknown>(EP.metricsMemory(app), { query: { since: Date.now() - 15 * 60_000 } }),
       ]);
       const cpu = cpuRes.status === "fulfilled" ? parseSeries(cpuRes.value.data, "cpu", "%") : null;
       const memory = memRes.status === "fulfilled" ? parseSeries(memRes.value.data, "memory", "MB") : null;

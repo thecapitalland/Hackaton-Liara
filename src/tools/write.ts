@@ -11,6 +11,8 @@ import { config, isAllowedApp } from "../config.js";
 import { fa, maskValue } from "../i18n/fa.js";
 import {
   consumeApproval,
+  decideApproval,
+  effectiveRisk,
   getApproval,
   isApprovalExpired,
   pendingMessage,
@@ -19,6 +21,7 @@ import {
   type ApprovalChoice,
   type Risk,
 } from "../approval.js";
+import type { AuditApproval } from "../audit.js";
 import { liaraGet, liaraPost } from "../liara/client.js";
 import { EP } from "../liara/endpoints.js";
 import { unwrapRelease } from "../liara/release.js";
@@ -145,7 +148,7 @@ export function mergeEnvVars(
 /* ─────────────────────────── عملیات: ساخت اپ ─────────────────────────── */
 
 registerAction({
-  kind: 'liara_create_network', risk: 'medium', appScoped: true,
+  kind: 'liara_create_network', risk: 'high', appScoped: true,
   impact: 'ایجاد شبکهٔ داخلی در تیم لیارا؛ تعرفهٔ مستقل از API مشخص نشده است.',
   describe: p => `ساخت شبکهٔ داخلی «${p.networkName}» برای اپ آزمایشی «${p.app}».`,
   choices: () => SIMPLE_CHOICES,
@@ -157,7 +160,7 @@ registerAction({
 
 registerAction({
   kind: "liara_create_app",
-  risk: "medium",
+  risk: "high",
   impact: "ساخت اپ جدید (مصرف منابع و احتمال هزینهٔ پلن)",
   appScoped: true,
   describe: (p) =>
@@ -271,7 +274,7 @@ registerAction({
 
 registerAction({
   kind: "liara_scale",
-  risk: "medium",
+  risk: "high",
   impact: "خاموش/روشن‌کردن سرویس — در حالت خاموش سایت از دسترس خارج می‌شود",
   appScoped: true,
   describe: (p) =>
@@ -292,7 +295,7 @@ registerAction({
 
 registerAction({
   kind: "liara_resize",
-  risk: "medium",
+  risk: "high",
   impact: "تغییر پلن — احتمال افزایش هزینهٔ ماهانه و ری‌استارت سرویس",
   appScoped: true,
   describe: (p) =>
@@ -426,43 +429,67 @@ export async function runGuardedAction(
 
   if (kind === 'liara_create_app') params = { ...params, quote: await quoteCreate(params) };
   const summaryFa = spec.describe(params);
-  const outcome = await requireApproval({
-    tool: kind,
-    app,
-    params,
-    summaryFa,
-    risk: spec.risk,
-    impact: spec.impact,
-    choices: spec.choices(params),
-  });
+  const decision = decideApproval({ tool: kind, params, declaredRisk: spec.risk });
 
-  if (outcome.mode === "rejected") {
+  /** اجرای عملیات با انتخاب مسیر تأییدشده یا خودکار. */
+  const execute = async (approval: AuditApproval, autoNotice?: string) => {
+    assertPreflight();
+    const actionResult = await audited(kind, app, params, async () => {
+      const action = await spec.run(params);
+      const text = autoNotice ? `${autoNotice}\n${action.text}` : action.text;
+      const structured = autoNotice
+        ? {
+            ...(action.structured ?? {}),
+            approvalMode: "automatic",
+            approvalPolicy: decision.policy,
+            riskLevel: decision.risk,
+            approvalNoticeFa: autoNotice,
+          }
+        : action.structured;
+      return result(text, structured);
+    }, approval);
     return {
-      res: result(`${fa.rejected}\n📌 ${summaryFa}`, { ok: false, code: "REJECTED" }),
-      executed: false,
+      res: actionResult,
+      executed: !actionResult.isError && actionResult.structuredContent?.ok !== false,
     };
-  }
-
-  if (outcome.mode === "pending") {
-    return {
-      res: result(
-        `${pendingMessage(outcome.record)}\n📌 ${summaryFa}`,
-        { ok: false, code: "APPROVAL_REQUIRED", approval: redact(outcome.record) },
-      ),
-      executed: false,
-      approvalId: outcome.record.approvalId,
-    };
-  }
-
-  assertPreflight();
-  const actionResult = await audited(kind, app, params, async () => {
-    const action = await spec.run(params);
-    return result(action.text, action.structured);
-  }, 'approved');
-  return {
-    res: actionResult,
-    executed: !actionResult.isError && actionResult.structuredContent?.ok !== false,
   };
+
+  if (decision.requiresApproval) {
+    const outcome = await requireApproval({
+      tool: kind,
+      app,
+      params,
+      summaryFa,
+      risk: decision.risk,
+      impact: spec.impact,
+      choices: spec.choices(params),
+    });
+
+    if (outcome.mode === "rejected") {
+      return {
+        res: result(`${fa.rejected}\n📌 ${summaryFa}`, { ok: false, code: "REJECTED" }),
+        executed: false,
+      };
+    }
+
+    if (outcome.mode === "pending") {
+      return {
+        res: result(
+          `${pendingMessage(outcome.record)}\n📌 ${summaryFa}`,
+          { ok: false, code: "APPROVAL_REQUIRED", approval: redact(outcome.record) },
+        ),
+        executed: false,
+        approvalId: outcome.record.approvalId,
+      };
+    }
+
+    return execute('approved');
+  }
+
+  const autoNotice =
+    decision.autoNoticeFa ??
+    `🤖 اجرای خودکار طبق سیاست ${decision.policy} — ${decision.reasonFa}`;
+  return execute(`auto:${decision.policy}`, autoNotice);
 }
 
 /* ─────────────────────────── ثبت ابزارها ─────────────────────────── */
@@ -676,7 +703,7 @@ export function registerWriteTools(server: McpServer): void {
           app,
           params: merged,
           summaryFa: spec.describe(merged),
-          risk: spec.risk,
+          risk: effectiveRisk(kind, merged, spec.risk),
           impact: spec.impact,
           choices: spec.choices(merged),
         });

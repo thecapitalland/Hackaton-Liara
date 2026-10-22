@@ -12,11 +12,32 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { config } from "./config.js";
+import { config, type ApprovalPolicy } from "./config.js";
 import { fa } from "./i18n/fa.js";
 
 export type Risk = "low" | "medium" | "high";
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "used";
+
+/**
+ * اقدام‌هایی که به‌دلیل هزینه یا ریسک عملیاتی، صرف‌نظر از سیاست،
+ * همیشه تأیید انسانی می‌خواهند.
+ */
+export const ALWAYS_APPROVAL_KINDS: readonly string[] = [
+  "liara_create_app",
+  "liara_create_network",
+  "liara_resize",
+  "liara_scale",
+];
+
+export interface ApprovalDecision {
+  policy: ApprovalPolicy;
+  risk: Risk;
+  requiresApproval: boolean;
+  automatic: boolean;
+  reasonFa: string;
+  /** خط دقیق نمایش برای اجرای خودکار؛ فقط وقتی automatic=true */
+  autoNoticeFa?: string;
+}
 
 /** وضعیت‌هایی که دیگر هرگز تغییر نمی‌کنند (به‌ویژه بازگشت به approved ممنوع است). */
 export const TERMINAL_STATUSES = ["rejected", "expired", "used"] as const;
@@ -77,6 +98,99 @@ export function hashParams(tool: string, app: string | undefined, params: Record
   return createHash("sha256")
     .update(canonicalJson({ tool, app: app ?? null, params }))
     .digest("hex");
+}
+
+/* ───────────────────────── سیاست تأیید ───────────────────────── */
+
+/** آیا پارامترهای این عملیات فقط `BUG_MODE=off` را تغییر می‌دهند؟ */
+export function isBugModeOff(params: Record<string, unknown>): boolean {
+  const vars = params["variables"];
+  const unset = params["unset"];
+  if (!Array.isArray(vars) || vars.length !== 1) return false;
+  if (Array.isArray(unset) && unset.length > 0) return false;
+  const v = vars[0];
+  if (!v || typeof v !== "object") return false;
+  const obj = v as Record<string, unknown>;
+  return (
+    String(obj["key"] ?? "").trim().toUpperCase() === "BUG_MODE" &&
+    String(obj["value"] ?? "").trim().toLowerCase() === "off"
+  );
+}
+
+/**
+ * ریسک مؤثر یک اقدام. عملیات هزینه‌دار/پرخطر همیشه high هستند و
+ * برگرداندن BUG_MODE به off به‌عنوان اقدام کم‌خطر و برگشت‌پذیر شناخته می‌شود.
+ */
+export function effectiveRisk(
+  tool: string,
+  params: Record<string, unknown>,
+  declaredRisk: Risk,
+): Risk {
+  if (ALWAYS_APPROVAL_KINDS.includes(tool)) return "high";
+  if (tool === "liara_set_env" && isBugModeOff(params)) return "low";
+  return declaredRisk;
+}
+
+/**
+ * تنها نقطهٔ تصمیم‌گیری تأیید در کل سرور.
+ * - high: در همهٔ سیاست‌ها تأیید می‌خواهد.
+ * - strict: همهٔ نوشتن‌ها تأیید می‌خواهند.
+ * - balanced: low خودکار؛ medium/high تأیید.
+ * - auto: low/medium خودکار؛ high تأیید.
+ */
+export function decideApproval(input: {
+  tool: string;
+  params?: Record<string, unknown>;
+  declaredRisk: Risk;
+  /** فقط برای تست/شبیه‌سازی؛ پیش‌فرض از config خوانده می‌شود. */
+  policy?: ApprovalPolicy;
+}): ApprovalDecision {
+  const policy = input.policy ?? config.approvalPolicy;
+  const risk = effectiveRisk(input.tool, input.params ?? {}, input.declaredRisk);
+
+  if (risk === "high") {
+    return {
+      policy,
+      risk,
+      requiresApproval: true,
+      automatic: false,
+      reasonFa: "اقدام پرخطر یا هزینه‌دار است؛ در همهٔ سیاست‌ها تأیید انسانی لازم است.",
+    };
+  }
+
+  if (policy === "strict") {
+    return {
+      policy,
+      risk,
+      requiresApproval: true,
+      automatic: false,
+      reasonFa: "سیاست strict: همهٔ اقدام‌های نوشتنی نیازمند تأیید هستند.",
+    };
+  }
+
+  if (policy === "balanced" && risk !== "low") {
+    return {
+      policy,
+      risk,
+      requiresApproval: true,
+      automatic: false,
+      reasonFa:
+        "سیاست balanced: تغییر env غیر از BUG_MODE=off یا انتشار جدید نیازمند تأیید است.",
+    };
+  }
+
+  const reasonFa =
+    policy === "balanced"
+      ? "اقدام کم‌خطر و برگشت‌پذیر است."
+      : "اقدام پرخطر یا هزینه‌دار نیست.";
+  return {
+    policy,
+    risk,
+    requiresApproval: false,
+    automatic: true,
+    reasonFa,
+    autoNoticeFa: `🤖 اجرای خودکار طبق سیاست ${policy} — ${reasonFa}`,
+  };
 }
 
 /* ───────────────────────── ذخیره‌سازی ───────────────────────── */

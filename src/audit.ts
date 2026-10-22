@@ -5,16 +5,21 @@
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { config } from "./config.js";
+import { config, type ApprovalPolicy } from "./config.js";
 import { redact } from './redact.js';
 
-export type ApprovalOutcome =
+export type AuditApproval =
   | "auto"
+  /** اجرای خودکار با ذکر سیاست، مثلاً auto:balanced */
+  | `auto:${ApprovalPolicy}`
   | "approved"
   | "rejected"
   | "pending"
   | "not-required"
   | "error";
+
+/** نام قبلی برای سازگاری */
+export type ApprovalOutcome = AuditApproval;
 
 export interface AuditEntry {
   ts: string;

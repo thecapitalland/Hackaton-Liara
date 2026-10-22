@@ -2,7 +2,7 @@
  * Agate-Liara — کمک‌کننده‌های مشترک ابزارها.
  */
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { maskParams, writeAudit } from "../audit.js";
+import { maskParams, writeAudit, type AuditApproval } from "../audit.js";
 import { faErrorMessage, LiaraError } from "../liara/client.js";
 import { redact } from '../redact.js';
 
@@ -27,14 +27,20 @@ export async function audited(
   app: string | undefined,
   params: Record<string, unknown> | undefined,
   fn: () => Promise<CallToolResult>,
-  approval: "auto" | "approved" | "rejected" | "not-required" | "error" = "auto",
+  approval: AuditApproval = "auto",
 ): Promise<CallToolResult> {
   const started = Date.now();
   try {
     const res = await fn();
     const failed = res.isError === true || res.structuredContent?.ok === false;
     const code = res.structuredContent?.code;
-    const outcome = code === 'REJECTED' ? 'rejected' : code === 'APPROVAL_REQUIRED' ? 'pending' : res.structuredContent?.approval === 'approved' ? 'approved' : approval;
+    const autoPolicy = res.structuredContent?.approvalMode === 'automatic'
+      ? res.structuredContent?.approvalPolicy
+      : undefined;
+    const autoOutcome = autoPolicy === 'strict' || autoPolicy === 'balanced' || autoPolicy === 'auto'
+      ? (`auto:${autoPolicy}` as AuditApproval)
+      : undefined;
+    const outcome = code === 'REJECTED' ? 'rejected' : code === 'APPROVAL_REQUIRED' ? 'pending' : res.structuredContent?.approval === 'approved' ? 'approved' : autoOutcome ?? approval;
     writeAudit({
       ts: new Date().toISOString(),
       tool,
