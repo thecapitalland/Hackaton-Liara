@@ -50,3 +50,12 @@
 - `GET /v1/projects/agate-liara` also returns `dns:[]`, `defaultSubdomain:true`, env keys `PORT`/`NODE_ENV` (values never read/printed), `hourlyPrice 659.72`, `bundleHourlyPrice 381.94`.
 - No upload, release, deployment, env change, restart, scale, domain or SSL mutation was performed. `agate-liara.liara.run` is not expected to serve until a release is deployed.
 - Next gate: separate explicit approval for source upload/release of `./demo-site`, then health verification. The app now exists, so retrying create is unnecessary and prohibited.
+
+## First deployment attempt · 2026-10-22 15:53 UTC
+- Owner approved the combined option: env merge + one upload + one release. Repo pushed to `origin/main` (`422ceee`) after secret-scan PASS; `.env` is untracked and was never committed.
+- Deployment package: 11843 bytes (11.6KB), 5 files (`liara.json`, `package.json`, `public/app.js`, `public/styles.css`, `server.mjs`), SHA-256 `30dab33e…c6ebf2`; `node_modules`, `.env` and `test.mjs` excluded. Demo tests 7/7 PASS locally.
+- Env merge: one approved `POST /v1/projects/update-envs` succeeded; `totalKeys=4` (`PORT`, `NODE_ENV` preserved; `BUG_MODE`, `ADMIN_KEY` added). Values redacted.
+- Deploy approval `b5e115c7-da44-418c-8c76-9cef710eec6e` was consumed once. Source upload succeeded, then `POST /v2/projects/agate-liara/releases` returned **400**: `"build.location" must be one of [iran, germany]`. No `releaseID`, no build logs, no running version; `isDeployed:false`.
+- Root cause: our release body sent `build.location:"."` (source path) instead of the build region. Fixed locally in `buildReleaseBody`: `location` defaults to `iran` (override `LIARA_BUILD_LOCATION`), validated against `iran|germany`; dockerfile remains docker-only. Typecheck PASS, tests 40/40 PASS.
+- `GET /v2/projects/agate-liara/sources` returns 404, so the uploaded sourceID cannot be recovered; a retry needs one new upload and one new release. No automatic retry was performed.
+- Awaiting fresh approval. No further provider write occurred after the 400.

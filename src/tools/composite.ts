@@ -14,7 +14,7 @@ import { liaraGet, liaraPost, uploadSource, LiaraError } from "../liara/client.j
 import { EP } from "../liara/endpoints.js";
 import { detectCauses, parseEvents, parseLogs, parseSeries } from "../diagnose/detectors.js";
 import { rankWithLlm } from "../diagnose/llm.js";
-import { detectStack } from "../deploy/detect.js";
+import { detectStack, type StackDetection } from "../deploy/detect.js";
 import { humanSize, packageSource } from "../deploy/package.js";
 import { httpProbe, probeSummary, sleep } from "../probe.js";
 import { askChoice } from "../approval.js";
@@ -104,6 +104,37 @@ export interface DeployOutcome {
   structured?: Record<string, unknown>;
 }
 
+/** مقادیر مجاز build.location طبق اعتبارسنجی زندهٔ POST /v2/projects/{app}/releases */
+export const BUILD_LOCATIONS = ["iran", "germany"] as const;
+
+/**
+ * ساخت بدنهٔ release. `build.location` منطقهٔ بیلد است، نه مسیر سورس؛
+ * مقدار «.» باعث خطای 400 می‌شود. پیش‌فرض iran و قابل تغییر با LIARA_BUILD_LOCATION.
+ */
+export function buildReleaseBody(
+  detection: StackDetection,
+  sourceID: string,
+  location: string = process.env.LIARA_BUILD_LOCATION ?? "iran",
+): Record<string, unknown> {
+  if (!(BUILD_LOCATIONS as readonly string[]).includes(location)) {
+    throw new Error(
+      `منطقهٔ بیلد «${location}» معتبر نیست؛ فقط ${BUILD_LOCATIONS.join(" یا ")} مجاز است.`,
+    );
+  }
+  return {
+    sourceID,
+    port: detection.port ?? 3000,
+    type: detection.platform,
+    message: `Agate-Liara — ${new Date().toISOString()}`,
+    build: {
+      cache: true,
+      args: {},
+      location,
+      ...(detection.platform === "docker" ? { dockerfile: "Dockerfile" } : {}),
+    },
+  };
+}
+
 /**
  * بسته‌بندی ← آپلود ← انتشار ← انتظار ← پروب.
  * توسط liara_deploy و deploy_project استفاده می‌شود.
@@ -136,18 +167,7 @@ export async function deploySourceToApp(app: string, srcPath: string): Promise<D
   lines.push(`${fa.deployUpload} (${humanSize(packed.bytes)}) — source: ${sourceID}`);
 
   lines.push(fa.deployRelease);
-  const releaseBody: Record<string, unknown> = {
-    sourceID,
-    port: detection.port ?? 3000,
-    type: detection.platform,
-    message: `Agate-Liara — ${new Date().toISOString()}`,
-    build: {
-      cache: true,
-      args: {},
-      location: ".",
-      ...(detection.platform === "docker" ? { dockerfile: "Dockerfile" } : {}),
-    },
-  };
+  const releaseBody = buildReleaseBody(detection, sourceID);
   const { data: releaseData } = await liaraPost<Record<string, unknown>>(
     EP.createRelease(app),
     releaseBody,
