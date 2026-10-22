@@ -2,7 +2,7 @@
 
 دستیار DevOps/SRE فارسی برای چالش لیارا در هکاتون Starcoach Agentic AI؛ یک سرور TypeScript MCP با انتقال stdio، بدون دیتابیس، LangGraph یا کنسول وب مدیریتی. سایت دمو یک اپ مستقل و عمداً قابل خراب‌کردن است.
 
-**وضعیت:** preflight زنده پس از اصلاح hosts توسط مالک، ۴/۴ موفق شد. تلاش‌های ساخت اپ با تأیید انسانی به خطاهای ناسازگاری پلن/بسته رسید؛ فقط شبکهٔ داخلی ساخته شده و هنوز اپ یا release نداریم. سلامت دامنه به‌علت `ENOTFOUND agate-liara.liara.run` تأیید نشده است. آخرین وضعیت: [PROGRESS.md](PROGRESS.md)، [آزمون‌ها](docs/TEST_EVIDENCE.md) و [محدودیت‌ها](docs/LIMITATIONS.md). مخزن خصوصی است و push انجام نشده است.
+**وضعیت:** preflight زنده ۴/۴ موفق است. اپ `agate-liara` با تأیید صریح و یک POST ساخته شد: `small-g2/basic` + شبکهٔ `6ada1e64b3b5ca83e1ee0ce1`؛ GET آن را `ACTIVE` و `isDeployed:false` نشان می‌دهد. هنوز هیچ آپلود، release یا انتشار انجام نشده و دامنه سرویس نمی‌کند. آخرین وضعیت: [PROGRESS.md](PROGRESS.md)، [آزمون‌ها](docs/TEST_EVIDENCE.md) و [محدودیت‌ها](docs/LIMITATIONS.md). مخزن خصوصی است و push انجام نشده است.
 
 ## اجرای سریع
 
@@ -147,6 +147,8 @@ node --env-file=.env demo-site/server.mjs
 **ناسازگاری زندهٔ بستهٔ امکانات:** درخواست با `bundlePlanID=default` رد شد:
 `"bundlePlanID" must be one of [free, basic, standard, pro]`.
 مقادیر مجاز طبق اعتبارسنجی POST فقط `free`، `basic`، `standard` و `pro` هستند؛ حضور در enum تضمین دسترسی یا پذیرش برای هر پلن نیست. GET همچنان برای نسل قبل `g1.default` نشان می‌دهد و تعرفهٔ `basic`/`standard` برای `ir-small` را اعلام نمی‌کند. هزینهٔ منابع این پلن حدود ۹۵۰٬۰۰۰ تومان/ماه است؛ هزینهٔ کل با بستهٔ جایگزین هنوز معلوم نیست. هر تغییر بسته و تلاش مجدد نیازمند تأیید تازه است؛ fallback خودکار نداریم. وضعیت تلاش‌ها در `PROGRESS.md` ثبت می‌شود.
+
+**نتیجهٔ نهایی ساخت:** ترکیب دقیق `small-g2/basic` همراه با `network=6ada1e64b3b5ca83e1ee0ce1` با یک POST پذیرفته شد و `projectID=6ada2dd838253e6cdf2b836e` برگشت؛ GET نیز اپ را `ACTIVE` با همان پلن/بسته/شبکه تأیید کرد. دو تلاش قبلی g2/ir-small بدون همین شبکه بودند. این موفقیت به معنی تأیید deploy یا سلامت سرویس نیست: `isDeployed:false` است و هیچ release/آپلودی انجام نشده.
 
 تلاش صریحاً تأییدشده با `ir-small/basic` نیز با `g1_plan_unavailable` رد شد و GET وجود هیچ اپی را نشان نداد. بنابراین معتبر بودن شناسهٔ بسته به‌تنهایی کافی نیست؛ محدودیت نسل پلن/تیم هم ممکن است مانع ساخت شود.
 

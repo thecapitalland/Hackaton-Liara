@@ -1,13 +1,22 @@
 # Verification evidence · 2026-10-22
 
-## Latest exact-catalog fix
+## Successful app create (live, 15:38 UTC)
+- Owner approved the exact displayed body: `{name:"agate-liara",planID:"small-g2",bundlePlanID:"basic",platform:"node",network:"6ada1e64b3b5ca83e1ee0ce1"}`, quote hash `5babbdf1…255eee8`, 750000 Tomans/month.
+- Pre-state read-only GET: projects `[]`; networks contains `6ada1e64b3b5ca83e1ee0ce1` (`agate-liara`, projectCount 0).
+- Approval `5a13c217-…` was locally rejected because the PowerShell stdin pipe failed; zero provider writes. Re-proposed with identical hash; `53c302a6-…` approved and consumed once.
+- One `POST /v1/projects` returned `200 {"projectID":"6ada2dd838253e6cdf2b836e"}`.
+- Reconciliation `GET /v1/projects`: one app, `project_id agate-liara`, `status ACTIVE`, `planID small-g2`, `bundlePlanID basic`, network `6ada1e64b3b5ca83e1ee0ce1`, `isDeployed:false`. `GET /v1/projects/agate-liara`: `dns:[]`, env keys `PORT`/`NODE_ENV` (values not printed), `hourlyPrice 659.72`, `bundleHourlyPrice 381.94`.
+- No upload, release, deploy, env, restart, scale, domain or SSL mutation. Public health remains unverified until deployment; absence of deployment is not a health PASS.
+- `npm run typecheck`: PASS. `npm test`: PASS, 37/37. `npm run build`: PASS. `npm run secret-scan`: PASS (60 files).
+
+## Exact-catalog fix (earlier same day)
 - `npx tsx scripts/plan-catalog.ts`: authenticated GET /v1/me with configured teamID; saved only filtered plans/projects+bundles to `docs/PLAN_CATALOG_LIVE.json`. 15 available Iran project keys; 8 have exact-key active bundle groups. Seven legacy keys have no matching bundle group and are excluded from create candidates.
 - Owner selected `small-g2/basic` at displayed combined 750000 Tomans/month. Selection only; no provider mutation authorized or executed in this phase. Prior standard retry was explicitly rejected and audited locally.
 - `npm run build`: PASS, exit 0.
 - `npm test`: PASS, 36/36, 0 failed (~1.57s). Four catalog tests cover strict availability/region filtering, exact-key join, unknown prices, quote changes, and rejection before any mocked POST.
 - `npm run secret-scan`: PASS, 60 commit-eligible files; configured secrets not detected (not a universal secret detector).
 - Actual stdio `liara_create_app` with old ir-small/basic request: blocked at fresh catalog validation, before approval/POST. This is a negative read-only validation check, not a new failed provider create request.
-- Successful create/deploy remains unverified; `available:true` does not negate the previous provider `g2_plan_unavailable` response.
+- Successful create was later verified (see top section); deployment remains unverified. `available:true` did not by itself guarantee acceptance — the earlier g2 attempt lacked the network.
 
 ## Latest live continuation (supersedes historical network blocker below)
 - Read-only preflight: **4/4 HTTP 200** after owner hosts update; `.agate/preflight-1792678971580.json` is the latest rerun before resource creation.
@@ -16,7 +25,7 @@
 - One separately approved network creation succeeded and was GET-verified. Projects reconciliation still empty. No upload or release write performed.
 - Public health GET: **FAIL / DNS**, `fetch failed` → `getaddrinfo ENOTFOUND agate-liara.liara.run`, no HTTP status. No network code/system changes.
 - Build after live shape compatibility fixes: PASS. Final `npm test`: 32 passed, 0 failed (~1.19s). `npm run secret-scan`: 56 commit-eligible files, no configured secrets detected. These checks do not prove successful provider deployment.
-- Live deployment acceptance remains **BLOCKED**, not PASS; see PROGRESS.md and LIARA_API.md for exact response discrepancies.
+- Live deployment acceptance remains **NOT_RUN** (app creation succeeded, `isDeployed:false`); see PROGRESS.md and LIARA_API.md for exact response discrepancies.
 
 Environment: Windows, Node v26.2.0, npm 12.0.2, TypeScript 5.9.x; repository `thecapitalland/Hackaton-Liara`, local working tree based on `471d6f9`. This report describes the changes accompanying it, not a deployed release.
 

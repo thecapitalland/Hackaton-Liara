@@ -1,6 +1,6 @@
 # Liara API registry
 
-**Evidence:** initial implementation prompt + official `liara-cloud/openapi/spec/paas.yaml` inspected through GitHub on 2026-10-22. The `openapi.liara.ir/paas.yaml` host could not be fetched in this environment. **Live preflight executed: 0/4 — DNS resolution failure (EAI_AGAIN / ENOTFOUND).** A token is configured, but authentication was not reached. Never confuse documentation with live verification.
+**Evidence:** initial implementation prompt + official `liara-cloud/openapi/spec/paas.yaml` inspected through GitHub on 2026-10-22. The `openapi.liara.ir/paas.yaml` host could not be fetched in this environment. Live preflight later passed **4/4** after the owner fixed hosts, and an app create was live-verified (see “Successful live create”). Never confuse documentation with live verification.
 
 Sources: [PaaS spec](https://github.com/liara-cloud/openapi/blob/master/spec/paas.yaml), [DNS spec](https://github.com/liara-cloud/openapi/blob/master/spec/dns.yaml), [official CLI](https://github.com/liara-cloud/cli). Resolve the repository's current default branch if `master` changes.
 
@@ -9,7 +9,7 @@ Auth: `Authorization: Bearer <LIARA_API_TOKEN>`; append `teamID=<id>` when confi
 | Method | Path | Purpose / request |
 |---|---|---|
 | GET | `/v1/projects` | List apps |
-| POST | `/v1/projects` | Create `{name,planID,platform,bundlePlanID?,network?,readOnlyRootFilesystem?}`; bundle applicability must be verified against current CLI/live account |
+| POST | `/v1/projects` | Live-verified create: `{name,planID,platform,bundlePlanID,network}` — all five accepted together; returns `{projectID}` |
 | GET | `/v1/projects/{name}` | Project details |
 | GET | `/v1/me` | Account + `plans.projects`, `plans.projectBundlePlans` (CLI reference; no separate plans endpoint) |
 | POST | `/v2/projects/{name}/sources` | multipart `file` tar.gz, ≤256 MiB; `{sourceID}` |
@@ -59,9 +59,11 @@ First approved create: `small-g2/basic` returned provider error `g2_plan_unavail
 
 Second approved create (`ir-small/default`, without network) returned `network_is_required`. Official CLI `src/base.ts` confirms GET `/v1/networks` → `{networks:[...]}`, and `src/commands/network/create.ts` confirms POST `/v1/networks` with `{networkName}`. Live GET returned `{networks:[]}`. App creation requires `network:<network._id>` for this team; although previously optional in the source table, it is required by the live API. Owner separately approved creating network `agate-liara`. No host/DNS/transport changes by the agent.
 
-Approved network creation succeeded: response `{network:{_id}}`; reconciliation GET returned `{networks:[{_id,name,createdAt,projectCount,databaseCount}]}`. Subsequent separately-approved app create with that network and `ir-small/default` failed with `"bundlePlanID" must be one of [free, basic, standard, pro]`. This conflicts with the live legacy bundle listing `g1.default`; no alternative bundle is silently selected. Reconciliation projects remains empty. App/deploy operations are BLOCKED until a valid permitted plan/bundle is established.
+Approved network creation succeeded: response `{network:{_id}}`; reconciliation GET returned `{networks:[{_id,name,createdAt,projectCount,databaseCount}]}`. Subsequent separately-approved app create with that network and `ir-small/default` failed with `"bundlePlanID" must be one of [free, basic, standard, pro]`. This conflicts with the live legacy bundle listing `g1.default`; no alternative bundle is silently selected. An `ir-small/basic` retry failed with `g1_plan_unavailable`.
 
-Public health request failed with Node DNS `ENOTFOUND agate-liara.liara.run` (no HTTP response). No network workaround applied, as instructed by the owner.
+**Successful live create (15:38 UTC):** exact body `{name:"agate-liara",planID:"small-g2",bundlePlanID:"basic",platform:"node",network:"6ada1e64b3b5ca83e1ee0ce1"}` → `200 {"projectID":"6ada2dd838253e6cdf2b836e"}`. Reconciliation `GET /v1/projects` returned one app with `status ACTIVE`, `planID small-g2`, `bundlePlanID basic`, that network, and `isDeployed:false`. The earlier g2 failure had been sent without a network; `network` and `bundlePlanID` are both required by the live API for this team. This does not prove upload/release success or service health.
+
+Public health request failed with Node DNS `ENOTFOUND agate-liara.liara.run` (no HTTP response), before any release existed. No network workaround applied, as instructed by the owner. This result is historical and must be re-tested after deployment.
 
 ### Strict catalog contract (latest)
 
