@@ -12,6 +12,7 @@ import { config, isAllowedApp } from "../config.js";
 import { fa } from "../i18n/fa.js";
 import { liaraGet, liaraPost, uploadSource, LiaraError } from "../liara/client.js";
 import { EP } from "../liara/endpoints.js";
+import { unwrapRelease } from "../liara/release.js";
 import { detectCauses, parseEvents, parseLogs, parseSeries } from "../diagnose/detectors.js";
 import { rankWithLlm } from "../diagnose/llm.js";
 import { detectStack, type StackDetection } from "../deploy/detect.js";
@@ -51,8 +52,8 @@ const READ_ONLY_ANNOTATIONS = {
 const SUCCESS_STATES = ["ready", "deployed", "success", "succeeded", "active", "finished", "completed"];
 const FAILURE_STATES = ["failed", "fail", "error", "canceled", "cancelled", "aborted"];
 
-function releaseState(raw: unknown): { status: string; ok?: boolean; failed?: boolean } {
-  const obj = (raw ?? {}) as Record<string, unknown>;
+export function releaseState(raw: unknown): { status: string; ok?: boolean; failed?: boolean } {
+  const obj = unwrapRelease(raw);
   const status = String(
     obj["status"] ?? obj["state"] ?? obj["phase"] ?? obj["deploymentStatus"] ?? "",
   ).toLowerCase();

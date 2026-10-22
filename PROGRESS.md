@@ -71,3 +71,12 @@
 - `scripts/ensure-build.ts`: `ensureBuild()` runs `npm run build` and aborts if it fails. `scripts/mcp-call.ts` and `scripts/smoke.ts` call it before spawning `dist/index.js`; `npm start` also builds via `prestart`. This prevents stale-code execution (the cause of the repeated 400).
 - `src/approval.ts`: terminal states (`expired`, `rejected`, `used`) are immutable; `setApprovalStatus(id,"approved")` after `expiresAt` marks the record expired instead of approving; executing an expired record returns `APPROVAL_EXPIRED` with `freshApprovalRequired:true`, and `scripts/approve.ts` reports that a fresh request is required.
 - Evidence: `npm run typecheck` PASS, `npm run build` PASS, `npm test` 44/44 PASS. New tests cover no-auto-renew of expired approvals, terminal-state immutability, and build-before-run behavior. No provider write was performed as part of these fixes.
+
+## Release timeout was a false alarm · 2026-10-22 17:44 UTC
+- Read-only recheck: release `6ada364eb3b5ca83e1f16704` is `state:"READY"`; app `isDeployed:true`, `status:ACTIVE`.
+- Live verification: `GET https://agate-liara.liara.run/health` → **200** `{"status":"ok","bugMode":"off","uptime":5401,…}`; homepage → **200**, 10,362 bytes, Agate brand present.
+- Actual build timeline: source fetch 16:14:06, `npm install` 16:14:09, `up to date in 1s` 16:14:10, image built 16:14:19, push 100% (1.56GB) 16:14:31. Build finished ~25s after start.
+- Root cause of the reported timeout: `GET /v1/releases/{id}` nests state under `release.state`, while `releaseState()` read only top-level fields, so the wait loop never saw `READY`. Build logs without `since` also return only the first 20 lines, so the tail stopped at `Running npm install...`.
+- Fix: `unwrapRelease()` in `src/liara/release.ts`, used by `composite.ts` and `liara_release_status`. Regression test added; typecheck PASS, tests **45/45** PASS. No new release was created.
+- Package facts: uploaded archive was demo-site only — 5 files, 11,843 bytes, SHA-256 `30dab33e…c6ebf2`, zero dependencies/devDependencies, no lockfile. Root repo deps/lockfile were not uploaded.
+- Details and recommendations are in `LESSONS.md`.

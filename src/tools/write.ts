@@ -21,6 +21,7 @@ import {
 } from "../approval.js";
 import { liaraGet, liaraPost } from "../liara/client.js";
 import { EP } from "../liara/endpoints.js";
+import { unwrapRelease } from "../liara/release.js";
 import { audited, bullets, faTime, result } from "./common.js";
 import { parsePlans } from "./read.js";
 import { assertPreflight } from '../liara/preflight-gate.js';
@@ -788,7 +789,7 @@ export function registerWriteTools(server: McpServer): void {
     async ({ releaseID }) =>
       audited("liara_release_status", undefined, { releaseID }, async () => {
         const { data } = await liaraGet<Record<string, unknown>>(EP.getRelease(releaseID));
-        const obj = (data ?? {}) as Record<string, unknown>;
+        const obj = unwrapRelease(data);
         const status = String(obj["status"] ?? obj["state"] ?? "—");
         return result(
           `🚀 انتشار ${releaseID} — وضعیت: ${status}${obj["created_at"] ? ` — ${faTime(String(obj["created_at"]))}` : ""}`,

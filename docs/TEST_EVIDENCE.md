@@ -64,3 +64,16 @@ Failure history: original demo leak test used heapUsed for Buffers and failed; f
 | Release `6ada364eb3b5ca83e1f16704` | TIMEOUT | Build reached `npm install`; `waitForRelease` 10-min timeout; no deployed version |
 
 The build guard exists because a stale `dist` re-sent the old `build.location:"."` body and reproduced the 400. Expired approvals can no longer be approved or revived: after `expiresAt`, the record becomes `expired` and execution returns `APPROVAL_EXPIRED` with `freshApprovalRequired:true`.
+
+## 2026-10-22 — live verification and release-state fix
+| Check | Result | Evidence |
+|---|---|---|
+| `GET /v1/releases/6ada364eb3b5ca83e1f16704` | READY | nested `release.state`; build finished at 16:14:31 UTC |
+| App status | PASS | `isDeployed:true`, `status:ACTIVE`, 4 env keys |
+| `GET https://agate-liara.liara.run/health` | PASS | HTTP 200, `status:"ok"`, `bugMode:"off"` |
+| `GET https://agate-liara.liara.run/` | PASS | HTTP 200, 10,362 bytes, Agate brand |
+| `npm run typecheck` | PASS | after `unwrapRelease()` fix |
+| `npm test` | PASS | 45/45, including nested release-state regression |
+| Build log evidence | PASS | `up to date in 1s` at 16:14:10; `Successfully built` at 16:14:19; push 100% at 16:14:31 |
+
+The earlier `timeout` was client-side: `releaseState()` did not unwrap `data.release`. Build logs without `since` return only the oldest 20 lines, so the tail appeared stuck at `Running npm install...`. Details: `LESSONS.md`. No new release was created during this verification.
