@@ -1,0 +1,12 @@
+{
+  "name": "opspilot-langgraph-hitl-reference",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "demo": "node run.mjs",
+    "check": "node --check graph.mjs && node --check run.mjs"
+  },
+  "dependencies": {
+    "@langchain/langgraph": "^1.0.0"
+  }
+}
