@@ -49,6 +49,20 @@ Auth: `Authorization: Bearer <LIARA_API_TOKEN>`; append `teamID=<id>` when confi
 
 ## Live preflight protocol
 
+### Live update · 2026-10-22 14:04 UTC
+
+After the owner manually updated Windows hosts, authenticated GET preflight passed **4/4**: projects `{projects:[]}`, me `{user,team,databaseVersions,defaultDatabaseVersions,featureFlags,plans}`, domains `{domains:[],total}`, DNS zones `{status,data:[]}`. Existing-app endpoints cannot be tested before creating an app. The earlier DNS failure above is historical.
+
+`plans.projects` is an object keyed by plan ID, not an array. Each plan includes `available`, `region`, `RAM:{amount,shared}`, `CPU:{amount,shared}`, `price` and (g2) `displayPrice`. Official CLI interprets RAM.amount as GB and CPU.amount as cores; `price * 720` and `displayPrice` are Tomans/month. `plans.projectBundlePlans[planID][bundlePlanID]` carries a separate price. Show and approve the combined resources+bundle cost. CLI create body explicitly includes `bundlePlanID`.
+
+First approved create: `small-g2/basic` returned provider error `g2_plan_unavailable` despite `available:true` in GET /v1/me. Reconciled GET /v1/projects remains empty; no automatic retry/plan substitution. Owner separately approved legacy `ir-small/default` (hourly 1319.44 Tomans). Legacy bundle definitions come from `plans.projectBundlePlans.g1.default`.
+
+Second approved create (`ir-small/default`, without network) returned `network_is_required`. Official CLI `src/base.ts` confirms GET `/v1/networks` → `{networks:[...]}`, and `src/commands/network/create.ts` confirms POST `/v1/networks` with `{networkName}`. Live GET returned `{networks:[]}`. App creation requires `network:<network._id>` for this team; although previously optional in the source table, it is required by the live API. Owner separately approved creating network `agate-liara`. No host/DNS/transport changes by the agent.
+
+Approved network creation succeeded: response `{network:{_id}}`; reconciliation GET returned `{networks:[{_id,name,createdAt,projectCount,databaseCount}]}`. Subsequent separately-approved app create with that network and `ir-small/default` failed with `"bundlePlanID" must be one of [free, basic, standard, pro]`. This conflicts with the live legacy bundle listing `g1.default`; no alternative bundle is silently selected. Reconciliation projects remains empty. App/deploy operations are BLOCKED until a valid permitted plan/bundle is established.
+
+Public health request failed with Node DNS `ENOTFOUND agate-liara.liara.run` (no HTTP response). No network workaround applied, as instructed by the owner.
+
 Run `npm run preflight` from repository cwd with private `.env`. GETs only: project list, account/plans, existing allowlisted app details/logs v1+v2/events/metrics/domains/releases, all domains, DNS zones. No production apps outside the allowlist are inspected for app-level data.
 
 Output prints HTTP codes and keys/types, never Authorization or env values. Local report: `.agate/preflight-<timestamp>.json`; documentation summary: `docs/PREFLIGHT_LATEST.md` (created only after an actual run). Gate receipt: `.agate/preflight-gate.json`, bound to connection digest, 24h TTL, invalid after token/team/base changes. Any unexplained endpoint failure keeps the gate closed.

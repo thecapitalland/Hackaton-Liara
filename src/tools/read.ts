@@ -53,8 +53,9 @@ function num(obj: Record<string, unknown>, keys: string[]): number | undefined {
 
 /** نرمال‌سازی فهرست پلن‌ها از GET /v1/me */
 export function parsePlans(data: unknown): PlanLimits[] {
-  const envelope = data as { plans?: { projects?: unknown[] } } | null;
-  const plans = envelope?.plans?.projects ?? rowsOf(data);
+  const envelope = data as { plans?: { projects?: unknown[] | Record<string, any>; projectBundlePlans?: Record<string, Record<string, any>> } } | null;
+  const raw = envelope?.plans?.projects ?? rowsOf(data);
+  const plans: unknown[] = Array.isArray(raw) ? raw : Object.entries(raw).map(([planID, details]) => ({ ...details, planID }));
   const out: PlanLimits[] = [];
   for (const p of plans) {
     if (!p || typeof p !== "object") continue;
@@ -62,23 +63,31 @@ export function parsePlans(data: unknown): PlanLimits[] {
     if (obj['available'] === false) continue;
     const planID = str(obj, ["planID", "id", "planId", "_id"]);
     if (!planID) continue;
+    const bundleGroup = envelope?.plans?.projectBundlePlans?.[planID] ?? (!planID.includes('g2') && planID !== 'free' ? envelope?.plans?.projectBundlePlans?.g1 : undefined);
+    const basicBundle = bundleGroup ? Object.entries(bundleGroup).filter(([,b]) => b.available).sort(([,a],[,b]) => Number(a.price) - Number(b.price))[0] : undefined;
+    const resourceMonthly = typeof obj.displayPrice === 'number' ? obj.displayPrice : typeof obj.price === 'number' && obj.RAM ? obj.price * 720 : undefined;
+    const monthlyPrice = resourceMonthly !== undefined ? Math.round(resourceMonthly + (basicBundle?.[1]?.displayPrice ?? 0)) : undefined;
     const price =
       str(obj, ["price", "priceLabel", "priceText", "displayPrice"]) ??
       (typeof obj["price"] === "number" ? String(obj["price"]) : undefined);
     out.push({
       planID,
+      bundlePlanID: basicBundle?.[0],
+      monthlyPrice,
       name: str(obj, ["name", "title", "label", "displayName"]),
       ramMB:
+        (typeof (obj.RAM as any)?.amount === 'number' ? (obj.RAM as any).amount * 1024 : undefined) ??
         num(obj, ["memory", "ram", "ramMB", "memoryMB", "limitMemory", "memoryLimit"]) ??
         (typeof obj["memory"] === "object"
           ? num((obj["memory"] as Record<string, unknown>), ["amount", "value", "mb"])
           : undefined),
       cpuCores:
+        (typeof (obj.CPU as any)?.amount === 'number' ? (obj.CPU as any).amount : undefined) ??
         num(obj, ["cpu", "cpus", "cpuCores", "limitCPU", "cpuLimit"]) ??
         (typeof obj["cpu"] === "object"
           ? num((obj["cpu"] as Record<string, unknown>), ["amount", "value", "cores"])
           : undefined),
-      price,
+      price: monthlyPrice !== undefined ? `${monthlyPrice.toLocaleString('en-US')} تومان/ماه (منابع + ${basicBundle?.[0] ?? 'بسته'})` : price,
       region: str(obj, ["region", "regionID", "location"]),
     });
   }

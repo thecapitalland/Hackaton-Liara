@@ -215,6 +215,8 @@ async function ensureApp(
   app: string,
   platform: string,
   desiredPlan?: string,
+  bundlePlanID?: string,
+  network?: string,
 ): Promise<{ app: string; created: boolean; planID?: string; note?: string }> {
   try {
     await liaraGet(EP.getProject(app));
@@ -224,7 +226,8 @@ async function ensureApp(
   }
 
   const { data } = await liaraGet<unknown>(EP.me);
-  const plans = parsePlans(data);
+  const allPlans = parsePlans(data);
+  const plans = allPlans.filter(p => p.bundlePlanID && p.region === 'iran' && (desiredPlan ? p.planID === desiredPlan || p.planID?.includes('g2') : p.planID?.includes('g2')));
   if (!plans.length) {
     return {
       app,
@@ -235,6 +238,11 @@ async function ensureApp(
 
   const options = pickPlanOptions(plans, desiredPlan);
   let chosen = options[1] ?? options[0]!;
+  if (desiredPlan) {
+    const explicit = options.find(o => o.planID === desiredPlan);
+    if (!explicit) throw new Error('پلن انتخاب‌شده در فهرست قابل استفاده پیدا نشد.');
+    chosen = explicit;
+  }
 
   const selection = await askChoice(
     `اپ «${app}» روی لیارا وجود ندارد. یک پلن انتخاب کنید:\n${options
@@ -250,7 +258,7 @@ async function ensureApp(
   );
   if (selection) {
     chosen = options.find((o) => o.planID === selection) ?? chosen;
-  } else {
+  } else if (!desiredPlan) {
     return { app, created: false, note: `⏳ انتخاب پلن لازم است. گزینه‌ها:\n${options.map(o => o.labelFa + (o.descriptionFa ? ' — ' + o.descriptionFa : '')).join('\n')}\nبرای ساخت، liara_create_app را با planID انتخابی اجرا کنید؛ سپس deploy_project را دوباره صدا بزنید.` };
   }
 
@@ -258,6 +266,8 @@ async function ensureApp(
     name: app,
     planID: chosen.planID,
     platform,
+    bundlePlanID: bundlePlanID ?? plans.find(p => p.planID === chosen.planID)?.bundlePlanID,
+    network,
   });
   const ok = (out.res.structuredContent as { ok?: boolean } | undefined)?.ok === true;
   return { app, created: ok, planID: chosen.planID, note: ok ? undefined : String(out.res.content[0]?.type === 'text' ? out.res.content[0].text : '') };
@@ -270,8 +280,8 @@ export function pickPlanOptions(
 ): { planID: string; labelFa: string; descriptionFa?: string; recommended?: boolean }[] {
   const sorted = [...plans].sort((a, b) => (a.ramMB ?? 0) - (b.ramMB ?? 0));
   const cheapest = sorted[0];
-  const largest = sorted[sorted.length - 1];
-  const middle = sorted[Math.floor(sorted.length / 2)] ?? largest;
+  const largest = sorted[2] ?? sorted[sorted.length - 1];
+  const middle = sorted[1] ?? cheapest;
 
   const desired = desiredPlan ? plans.find((p) => p.planID === desiredPlan) : undefined;
   const recommended = desired ?? middle ?? largest ?? cheapest;
@@ -634,10 +644,13 @@ export function registerCompositeTools(server: McpServer): void {
       inputSchema: {
         path: z.string().default(".").describe("مسیر پوشهٔ پروژه"),
         app: z.string().default("agate-liara").describe("نام اپ در لیارا"),
+        planID: z.string().optional().describe('پلن صریحاً انتخاب‌شده توسط کاربر؛ در نبود elicitation'),
+        bundlePlanID: z.string().optional().describe('بستهٔ امکانات انتخاب‌شده'),
+        network: z.string().optional().describe('شناسهٔ شبکهٔ داخلی انتخاب‌شده در لیارا'),
       },
       annotations: COMPOSITE_ANNOTATIONS,
     },
-    async ({ path: src, app }) => {
+    async ({ path: src, app, planID, bundlePlanID, network }) => {
       const started = Date.now();
       try {
         if (!isAllowedApp(app)) {
@@ -647,9 +660,9 @@ export function registerCompositeTools(server: McpServer): void {
           });
         }
         const detection = detectStack(src, app);
-        const ensured = await ensureApp(app, detection.platform);
+        const ensured = await ensureApp(app, detection.platform, planID, bundlePlanID, network);
         if (ensured.note) {
-          return result(ensured.note, { ok: false, code: "APP_NOT_ALLOWLISTED" });
+          return result(ensured.note, { ok: false, code: ensured.note.includes('نیاز به تأیید') ? 'APPROVAL_REQUIRED' : 'PLAN_SELECTION_REQUIRED' });
         }
         if (ensured.created) {
           // ادامه با ساخت اپ

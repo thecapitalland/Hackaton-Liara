@@ -94,6 +94,8 @@ export interface EnvSnapshot {
 }
 
 export interface PlanLimits {
+  bundlePlanID?: string;
+  monthlyPrice?: number;
   planID?: string;
   name?: string;
   ramMB?: number;

@@ -2,6 +2,15 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildUrl, liaraGet, LiaraError } from '../src/liara/client.js';
 import { parseSeries, cpuPercent } from '../src/diagnose/detectors.js';
+import { parsePlans } from '../src/tools/read.js';
+
+test('live keyed plans: GB RAM, uppercase CPU and total bundle pricing', () => {
+  const parsed = parsePlans({plans:{projects:{'small-g2':{available:true,region:'iran',RAM:{amount:0.5},CPU:{amount:0.5},price:659.72,displayPrice:475000}},projectBundlePlans:{'small-g2':{basic:{available:true,price:381.94,displayPrice:275000},free:{available:false,price:0,displayPrice:0}}}}});
+  assert.equal(parsed[0]?.ramMB,512);
+  assert.equal(parsed[0]?.cpuCores,0.5);
+  assert.equal(parsed[0]?.bundlePlanID,'basic');
+  assert.equal(parsed[0]?.monthlyPrice,750000);
+});
 
 test('URL هر درخواست teamID دارد و تغییر میزبان رد می‌شود', () => {
   const previous = process.env.LIARA_TEAM_ID;

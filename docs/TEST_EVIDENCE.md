@@ -1,5 +1,14 @@
 # Verification evidence · 2026-10-22
 
+## Latest live continuation (supersedes historical network blocker below)
+- Read-only preflight: **4/4 HTTP 200** after owner hosts update; `.agate/preflight-1792678971580.json` is the latest rerun before resource creation.
+- Actual MCP stdio `deploy_project` used for plan proposal and create approval requests.
+- Three separately approved app-create attempts: `g2_plan_unavailable`, `network_is_required`, then `"bundlePlanID" must be one of [free, basic, standard, pro]`. Each attempt consumed its own approval; no blind retry.
+- One separately approved network creation succeeded and was GET-verified. Projects reconciliation still empty. No upload or release write performed.
+- Public health GET: **FAIL / DNS**, `fetch failed` → `getaddrinfo ENOTFOUND agate-liara.liara.run`, no HTTP status. No network code/system changes.
+- Build after live shape compatibility fixes: PASS. Final `npm test`: 32 passed, 0 failed (~1.19s). `npm run secret-scan`: 56 commit-eligible files, no configured secrets detected. These checks do not prove successful provider deployment.
+- Live deployment acceptance remains **BLOCKED**, not PASS; see PROGRESS.md and LIARA_API.md for exact response discrepancies.
+
 Environment: Windows, Node v26.2.0, npm 12.0.2, TypeScript 5.9.x; repository `thecapitalland/Hackaton-Liara`, local working tree based on `471d6f9`. This report describes the changes accompanying it, not a deployed release.
 
 | Claim / command | Result | Evidence / limits |

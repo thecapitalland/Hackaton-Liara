@@ -15,6 +15,7 @@ export const EP = {
   getProject: (name: string) => `/v1/projects/${enc(name)}`,
   /** فقط endpoint پلن‌ها: GET /v1/me → plans */
   me: "/v1/me",
+  networks: '/v1/networks',
 
   /* ── دیپلوی ──────────────────────────────────────────────────────── */
   uploadSource: (name: string) => `/v2/projects/${enc(name)}/sources`,

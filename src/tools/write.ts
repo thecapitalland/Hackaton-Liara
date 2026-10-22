@@ -53,7 +53,8 @@ const ACTIONS = new Map<string, ActionSpec>();
 const appName = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/);
 const variable = z.object({ key: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), value: z.string() });
 const actionSchemas: Record<string, z.ZodType> = {
-  liara_create_app: z.object({ name: appName, planID: z.string().min(1), platform: z.enum(['node','docker','python','static']), bundlePlanID: z.string().optional() }),
+  liara_create_app: z.object({ name: appName, planID: z.string().min(1), platform: z.enum(['node','docker','python','static']), bundlePlanID: z.string().optional(), network: z.string().optional() }),
+  liara_create_network: z.object({ app: appName, networkName: appName }),
   liara_deploy: z.object({ app: appName, path: z.string().min(1) }),
   liara_restart: z.object({ app: appName }),
   liara_scale: z.object({ app: appName, on: z.boolean() }),
@@ -140,18 +141,29 @@ export function mergeEnvVars(
 /* ─────────────────────────── عملیات: ساخت اپ ─────────────────────────── */
 
 registerAction({
+  kind: 'liara_create_network', risk: 'medium', appScoped: true,
+  impact: 'ایجاد شبکهٔ داخلی در تیم لیارا؛ تعرفهٔ مستقل از API مشخص نشده است.',
+  describe: p => `ساخت شبکهٔ داخلی «${p.networkName}» برای اپ آزمایشی «${p.app}».`,
+  choices: () => SIMPLE_CHOICES,
+  run: async p => {
+    const {data} = await liaraPost(EP.networks, {networkName:p.networkName});
+    return {text:'✅ درخواست ساخت شبکه پذیرفته شد؛ فهرست شبکه‌ها را بررسی کنید.',structured:{ok:true,networkName:p.networkName,raw:data}};
+  },
+});
+
+registerAction({
   kind: "liara_create_app",
   risk: "medium",
   impact: "ساخت اپ جدید (مصرف منابع و احتمال هزینهٔ پلن)",
   appScoped: true,
   describe: (p) =>
-    `ساخت اپ «${String(p["name"] ?? "")}» با پلن ${String(p["planID"] ?? "?")} روی پلتفرم ${String(p["platform"] ?? "node")} در حساب لیارا.`,
+    `ساخت اپ «${String(p["name"] ?? "")}» با پلن ${String(p["planID"] ?? "?")}، بستهٔ ${String(p['bundlePlanID'] ?? 'نامشخص')} و شبکهٔ ${String(p.network ?? 'نامشخص')} روی پلتفرم ${String(p["platform"] ?? "node")}.`,
   choices: () => SIMPLE_CHOICES,
   run: async (p) => {
     const name = String(p["name"] ?? "");
     const planID = String(p["planID"] ?? "");
     const platform = String(p["platform"] ?? "node");
-    const body: Record<string, unknown> = { name, planID, platform, ...(p.bundlePlanID ? { bundlePlanID: p.bundlePlanID } : {}) };
+    const body: Record<string, unknown> = { name, planID, platform, ...(p.bundlePlanID ? { bundlePlanID: p.bundlePlanID } : {}), ...(p.network ? {network:p.network} : {}) };
     const { data } = await liaraPost<Record<string, unknown>>(EP.createProject, body);
     const id = (data ?? {})["projectID"] ?? (data ?? {})["id"] ?? name;
     return {
@@ -460,17 +472,19 @@ export function registerWriteTools(server: McpServer): void {
       inputSchema: {
         name: z.string().min(1).describe("نام اپ"),
         planID: z.string().min(1).describe("شناسهٔ پلن (از liara_plans)"),
+        bundlePlanID: z.string().optional().describe('شناسهٔ بستهٔ امکانات از plans.projectBundlePlans'),
+        network: z.string().optional().describe('شناسهٔ شبکهٔ داخلی لیارا'),
         platform: z.enum(["node", "docker", "python", "static"]).default("node").describe("پلتفرم اجرا"),
       },
       annotations: WRITE_ANNOTATIONS,
     },
-    async ({ name, planID, platform }) =>
+    async ({ name, planID, platform, bundlePlanID, network }) =>
       audited(
         "liara_create_app",
         name,
         { name, planID, platform },
         async () => {
-          const out = await runGuardedAction("liara_create_app", { name, planID, platform });
+          const out = await runGuardedAction("liara_create_app", { name, planID, platform, bundlePlanID, network });
           return out.res;
         },
         "auto",
