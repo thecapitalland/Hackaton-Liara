@@ -1,8 +1,8 @@
 # Live API preflight
 
-2026-10-22T13:02:59.288Z
+2026-10-22T15:23:53.297Z
 
-- list projects: network error; ❌ ارتباط با API لیارا برقرار نشد. اتصال شبکه را بررسی کنید.
-- account + plans: network error; ❌ ارتباط با API لیارا برقرار نشد. اتصال شبکه را بررسی کنید.
-- all domains: network error; ❌ ارتباط با API لیارا برقرار نشد. اتصال شبکه را بررسی کنید.
-- dns zones: network error; ❌ ارتباط با API لیارا برقرار نشد. اتصال شبکه را بررسی کنید.
+- list projects: 200; { projects: array(0) }
+- account + plans: 200; { user: object, team: object, databaseVersions: object, defaultDatabaseVersions: object, featureFlags: array(31), plans: object }
+- all domains: 200; { domains: array(0), total: number }
+- dns zones: 200; { status: string, data: array(0) }

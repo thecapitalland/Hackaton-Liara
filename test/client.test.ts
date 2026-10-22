@@ -3,6 +3,15 @@ import { test } from 'node:test';
 import { buildUrl, liaraGet, LiaraError } from '../src/liara/client.js';
 import { parseSeries, cpuPercent } from '../src/diagnose/detectors.js';
 import { parsePlans } from '../src/tools/read.js';
+import { audited } from '../src/tools/common.js';
+
+test('خطای provider با وضعیت و تمام بدنهٔ JSON در MCP حفظ می‌شود', async () => {
+  const body = {statusCode:400,message:'g2_plan_unavailable',data:{code:'g2_plan_unavailable',reason:'fixture'}};
+  const res = await audited('fixture_error',undefined,{},async () => { throw new LiaraError('BAD_REQUEST','g2_plan_unavailable',400,body); });
+  assert.equal(res.isError,true);
+  assert.equal(res.structuredContent?.status,400);
+  assert.deepEqual(res.structuredContent?.providerResponse,body);
+});
 
 test('live keyed plans: GB RAM, uppercase CPU and total bundle pricing', () => {
   const parsed = parsePlans({plans:{projects:{'small-g2':{available:true,region:'iran',RAM:{amount:0.5},CPU:{amount:0.5},price:659.72,displayPrice:475000}},projectBundlePlans:{'small-g2':{basic:{available:true,price:381.94,displayPrice:275000},free:{available:false,price:0,displayPrice:0}}}}});

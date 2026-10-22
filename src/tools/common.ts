@@ -3,7 +3,7 @@
  */
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { maskParams, writeAudit } from "../audit.js";
-import { faErrorMessage } from "../liara/client.js";
+import { faErrorMessage, LiaraError } from "../liara/client.js";
 import { redact } from '../redact.js';
 
 /** ساخت پاسخ متنی + ساخت‌یافته */
@@ -58,7 +58,9 @@ export async function audited(
       durationMs: Date.now() - started,
       detail: message,
     });
-    return errorResult(message);
+    return err instanceof LiaraError
+      ? errorResult(message, err.code, { status: err.status ?? null, providerResponse: err.details ?? null })
+      : errorResult(message);
   }
 }
 
