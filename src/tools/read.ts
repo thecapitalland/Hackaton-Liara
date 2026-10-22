@@ -9,7 +9,7 @@ import { config, hasToken } from "../config.js";
 import { fa } from "../i18n/fa.js";
 import { liaraGet, liaraRequest } from "../liara/client.js";
 import { EP } from "../liara/endpoints.js";
-import { parseEvents, parseLogs, parseSeries } from "../diagnose/detectors.js";
+import { parseEvents, parseLogs, parseSeries, slope } from "../diagnose/detectors.js";
 import { httpProbe, probeSummary } from "../probe.js";
 import { readAuditTail } from "../audit.js";
 import { audited, bullets, faTime, result } from "./common.js";
@@ -53,11 +53,13 @@ function num(obj: Record<string, unknown>, keys: string[]): number | undefined {
 
 /** نرمال‌سازی فهرست پلن‌ها از GET /v1/me */
 export function parsePlans(data: unknown): PlanLimits[] {
-  const plans = rowsOf(data);
+  const envelope = data as { plans?: { projects?: unknown[] } } | null;
+  const plans = envelope?.plans?.projects ?? rowsOf(data);
   const out: PlanLimits[] = [];
   for (const p of plans) {
     if (!p || typeof p !== "object") continue;
     const obj = p as Record<string, unknown>;
+    if (obj['available'] === false) continue;
     const planID = str(obj, ["planID", "id", "planId", "_id"]);
     if (!planID) continue;
     const price =
@@ -126,7 +128,7 @@ export function registerReadTools(server: McpServer): void {
         if (!rows.length) return result(`${fa.appsHeader}\n${fa.noApps}`, { ok: true, apps: [] });
         const lines = rows.map((r) => {
           const obj = (r ?? {}) as Record<string, unknown>;
-          const name = str(obj, ["name", "project", "app", "projectID"]) ?? "—";
+          const name = str(obj, ["project_id", "name", "project", "app", "projectID"]) ?? "—";
           const status = str(obj, ["status", "state", "phase"]) ?? "—";
           const plan = str(obj, ["plan", "planID", "planId"]) ?? "—";
           const created = str(obj, ["created_at", "createdAt", "date"]);
@@ -153,7 +155,7 @@ export function registerReadTools(server: McpServer): void {
         const { data } = await liaraGet<Record<string, unknown>>(
           EP.getProject(app),
         );
-        const obj = (data ?? {}) as Record<string, unknown>;
+        const obj = (data?.project ?? data ?? {}) as Record<string, unknown>;
         const status = str(obj, ["status", "state", "phase"]) ?? "—";
         const plan = str(obj, ["plan", "planID", "planId"]) ?? "—";
         const scale = str(obj, ["scale", "replicas", "instances"]) ?? "—";
@@ -301,7 +303,7 @@ export function registerReadTools(server: McpServer): void {
           const max = Math.max(...values);
           const avg = values.reduce((a, b) => a + b, 0) / values.length;
           const last = values[values.length - 1]!;
-          return `کمینه ${round(min)} / میانگین ${round(avg)} / بیشینه ${round(max)} / آخرین ${round(last)} (${s.points.length} نمونه)`;
+          return `کمینه ${round(min)} / میانگین ${round(avg)} / بیشینه ${round(max)} / آخرین ${round(last)} / شیب ${round(slope(s.points))} (${s.points.length} نمونه؛ ${s.unit})`;
         };
 
         const unavailable: string[] = [];
@@ -465,36 +467,6 @@ export function registerReadTools(server: McpServer): void {
       }),
   );
 
-  /* ── liara_read_raw (ابزار کمکی preflight) ───────────────────────── */
-  server.registerTool(
-    "liara_read_raw",
-    {
-      title: "خواندن خام یک مسیر API",
-      description:
-        "ابزار کمکی و تشخیصی: یک GET خواندنی روی مسیر مشخص API لیارا (برای بررسی ساختار پاسخ). مسیر باید با / شروع شود.",
-      inputSchema: {
-        path: z.string().min(1).describe("مسیر API مانند /v1/projects/agate-liara"),
-        service: z.enum(["liara", "dns"]).default("liara").describe("سرویس مقصد"),
-      },
-      annotations: READ_ONLY,
-    },
-    async ({ path: apiPath, service }) =>
-      audited("liara_read_raw", undefined, { path: apiPath, service }, async () => {
-        if (!apiPath.startsWith("/")) {
-          return result("❌ مسیر باید با «/» شروع شود.", { ok: false });
-        }
-        const res = await liaraRequest<unknown>(apiPath, {
-          method: "GET",
-          base: service === "dns" ? config.dnsBase : config.apiBase,
-          fallbackBase:
-            service === "dns" ? config.dnsBaseFallback : config.apiBaseFallback,
-        });
-        return result(
-          `✅ ${apiPath} → ${res.status}\n${safeJson(res.data).slice(0, 3000)}`,
-          { ok: true, status: res.status, data: res.data },
-        );
-      }),
-  );
 }
 
 function round(n: number): number {

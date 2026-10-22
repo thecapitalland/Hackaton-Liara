@@ -1,0 +1,15 @@
+{
+  "name": "agate-liara-demo-site",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Agate Co. — سایت دموی هکاتون (چالش لیارا)",
+  "type": "module",
+  "main": "server.mjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node test.mjs"
+  }
+}

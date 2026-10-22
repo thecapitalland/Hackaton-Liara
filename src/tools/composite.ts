@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import path from "node:path";
 import { config, isAllowedApp } from "../config.js";
 import { fa } from "../i18n/fa.js";
-import { liaraGet, liaraPost, uploadSource } from "../liara/client.js";
+import { liaraGet, liaraPost, uploadSource, LiaraError } from "../liara/client.js";
 import { EP } from "../liara/endpoints.js";
 import { detectCauses, parseEvents, parseLogs, parseSeries } from "../diagnose/detectors.js";
 import { rankWithLlm } from "../diagnose/llm.js";
@@ -198,7 +198,7 @@ export async function deploySourceToApp(app: string, srcPath: string): Promise<D
   return {
     text: lines.join("\n"),
     structured: {
-      ok: true,
+      ok: probeOk,
       app,
       releaseID,
       url: healthUrl,
@@ -219,8 +219,8 @@ async function ensureApp(
   try {
     await liaraGet(EP.getProject(app));
     return { app, created: false };
-  } catch {
-    /* اپ وجود ندارد → ساخت */
+  } catch (error) {
+    if (!(error instanceof LiaraError) || error.status !== 404) throw error;
   }
 
   const { data } = await liaraGet<unknown>(EP.me);
@@ -250,6 +250,8 @@ async function ensureApp(
   );
   if (selection) {
     chosen = options.find((o) => o.planID === selection) ?? chosen;
+  } else {
+    return { app, created: false, note: `⏳ انتخاب پلن لازم است. گزینه‌ها:\n${options.map(o => o.labelFa + (o.descriptionFa ? ' — ' + o.descriptionFa : '')).join('\n')}\nبرای ساخت، liara_create_app را با planID انتخابی اجرا کنید؛ سپس deploy_project را دوباره صدا بزنید.` };
   }
 
   const out = await runGuardedAction("liara_create_app", {
@@ -258,7 +260,7 @@ async function ensureApp(
     platform,
   });
   const ok = (out.res.structuredContent as { ok?: boolean } | undefined)?.ok === true;
-  return { app, created: ok, planID: chosen.planID };
+  return { app, created: ok, planID: chosen.planID, note: ok ? undefined : String(out.res.content[0]?.type === 'text' ? out.res.content[0].text : '') };
 }
 
 /** انتخاب سه گزینهٔ پلن: ارزان‌ترین / پیشنهادی / با حاشیهٔ رشد */
@@ -316,6 +318,7 @@ interface Baseline {
 }
 
 function baselinePath(app: string): string {
+  if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(app)) throw new Error('نام اپ نامعتبر است.');
   const dir = config.stateDir;
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   return path.join(dir, `baseline-${app}.json`);
@@ -426,7 +429,7 @@ async function gatherDiagnosis(app: string, symptom?: string): Promise<Diagnosis
   else notes.push("متریک حافظه در دسترس نبود.");
 
   /* پروب */
-  const probe = await httpProbe(app, { path: "/health", count: 3 });
+  const probe = await httpProbe(app, { path: "/", count: 3 });
   if ("error" in probe) notes.push(probe.error);
 
   /* متغیرهای محیطی */
@@ -434,7 +437,7 @@ async function gatherDiagnosis(app: string, symptom?: string): Promise<Diagnosis
   let plan: PlanLimits | null = null;
   try {
     const res = await liaraGet<Record<string, unknown>>(EP.getProject(app));
-    const obj = (res.data ?? {}) as Record<string, unknown>;
+    const obj = (res.data?.project ?? res.data ?? {}) as Record<string, unknown>;
     const envs = obj["envs"];
     const defined = Array.isArray(envs)
       ? envs.map((e) =>
@@ -448,8 +451,8 @@ async function gatherDiagnosis(app: string, symptom?: string): Promise<Diagnosis
     notes.push("اطلاعات اپ (متغیرها/پلن) در دسترس نبود.");
   }
 
-  const detection = detectStack(process.cwd(), app);
-  if (env) env.required = detection.requiredEnv;
+  // Do not confuse the MCP server's own .env keys with those of the remote app.
+  if (env) env.required = [...new Set(logs.flatMap(l => [...l.message.matchAll(/(?:missing env(?: variable)?\s+|ENV\s+)([A-Z][A-Z0-9_]+)/g)].map(m => m[1]!)))];
 
   const detectionResult = detectCauses({
     app,
@@ -651,8 +654,8 @@ export function registerCompositeTools(server: McpServer): void {
         if (ensured.created) {
           // ادامه با ساخت اپ
         }
-        const outcome = await deploySourceToApp(app, src);
-        return result(outcome.text, { ...(outcome.structured ?? {}), durationMs: Date.now() - started });
+        const outcome = await runGuardedAction('liara_deploy', { app, path: src });
+        return outcome.res;
       } catch (err) {
         return result(`❌ استقرار ناموفق بود: ${(err as Error).message}`, {
           ok: false,
@@ -745,6 +748,7 @@ export function registerCompositeTools(server: McpServer): void {
     async ({ app, incidentId, option, planID, variables }) => {
       const baseline = loadBaseline(app);
       try {
+        if (!baseline || baseline.incidentId !== incidentId) return result('❌ baseline متناظر رخداد پیدا نشد؛ diagnose را اجرا کنید.', { ok: false });
         if (option === "restart") {
           const out = await runGuardedAction("liara_restart", { app });
           return result(
@@ -837,7 +841,8 @@ export function registerCompositeTools(server: McpServer): void {
     },
     async ({ app, incidentId }) => {
       const baseline = loadBaseline(app);
-      const probe = await httpProbe(app, { path: "/health", count: 3 });
+      if (!baseline || baseline.incidentId !== incidentId) return result('❌ baseline متناظر رخداد پیدا نشد؛ diagnose را اجرا کنید.', { ok: false });
+      const probe = await httpProbe(app, { path: new URL(baseline.probe.url || `https://${app}.liara.run/`).pathname, count: 3 });
       const [cpuRes, memRes] = await Promise.allSettled([
         liaraGet<unknown>(EP.metricsCpu(app), { query: { since: 15 } }),
         liaraGet<unknown>(EP.metricsMemory(app), { query: { since: 15 } }),
@@ -846,18 +851,18 @@ export function registerCompositeTools(server: McpServer): void {
       const memory = memRes.status === "fulfilled" ? parseSeries(memRes.value.data, "memory", "MB") : null;
 
       // بررسی ناپدیدشدن خطا
-      let errorsNow = 0;
+      let errorsNow: number | null = null;
       let logsNow: LogLine[] = [];
       try {
         const res = await liaraGet<unknown>(EP.logsV2(app), {
           query: {
-            start: new Date(Date.now() - 5 * 60_000).toISOString(),
+            start: new Date(Math.max(Date.parse(baseline.observedAt), Date.now() - 5 * 60_000)).toISOString(),
             direction: "forward",
             last_lines: 100,
           },
         });
         logsNow = parseLogs(res.data);
-        errorsNow = logsNow.filter((l) => l.level === "error").length;
+        errorsNow = baseline.errorPattern ? logsNow.filter(l => new RegExp(baseline.errorPattern!, 'i').test(l.message)).length : logsNow.filter(l => l.level === 'error').length;
       } catch {
         /* لاگ در دسترس نبود → اثبات نبودِ خطا ممکن نیست */
       }
@@ -885,7 +890,9 @@ export function registerCompositeTools(server: McpServer): void {
       const improved =
         nowStats.ok &&
         (before?.probe.ok === false || (before?.probe.p50 ?? Number.POSITIVE_INFINITY) >= (nowStats.p50 ?? 0)) &&
-        (before?.errorsSeen ?? 0) >= nowStats.errors;
+        nowStats.errors === 0 &&
+        (nowStats.p50 ?? Infinity) < 1500 &&
+        (before?.memory ? nowStats.memory !== null && nowStats.memory.last < before.memory.last : true);
 
       const verdict = improved ? fa.fixed : nowStats.ok ? fa.cannotVerify : fa.notFixed;
       const text = [
@@ -945,7 +952,7 @@ export function registerCompositeTools(server: McpServer): void {
       let domainId: string | undefined;
       try {
         const res = await liaraGet<unknown>(EP.listDomains, { query: { project: app } });
-        const rows = Array.isArray(res.data) ? res.data : [];
+        const rows = Array.isArray(res.data) ? res.data : (res.data as { domains?: unknown[] })?.domains ?? [];
         const found = (rows as Record<string, unknown>[]).find(
           (r) => String(r?.["name"] ?? "").toLowerCase() === domain.toLowerCase(),
         );
@@ -997,8 +1004,13 @@ export function registerCompositeTools(server: McpServer): void {
       const deadline = Date.now() + minutes * 60_000;
       let healthy = 0;
       let checks = 0;
+      const metrics: unknown[] = [];
       while (Date.now() < deadline) {
         const probe = await httpProbe(app, { path: "/health", count: 1 });
+        try {
+          const summary = await liaraGet(EP.metricsSummary(app));
+          metrics.push({ at: new Date().toISOString(), summary: summary.data });
+        } catch { metrics.push({ at: new Date().toISOString(), available: false }); }
         checks += 1;
         if ("error" in probe) {
           lines.push(`• ${faTime(new Date().toISOString())} — ❌ ${probe.error}`);
@@ -1016,7 +1028,7 @@ export function registerCompositeTools(server: McpServer): void {
           ? "✅ سرویس در کل بازهٔ پایش پایدار بود."
           : "⚠️ ناپایداری مشاهده شد — diagnose را اجرا کنید.",
       );
-      return result(lines.join("\n"), { ok: true, app, healthy, checks });
+      return result(lines.join("\n"), { ok: true, app, healthy, checks, metrics });
     },
   );
 

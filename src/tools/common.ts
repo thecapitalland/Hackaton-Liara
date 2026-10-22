@@ -4,20 +4,21 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { maskParams, writeAudit } from "../audit.js";
 import { faErrorMessage } from "../liara/client.js";
+import { redact } from '../redact.js';
 
 /** ساخت پاسخ متنی + ساخت‌یافته */
 export function result(
   text: string,
   structured?: Record<string, unknown>,
 ): CallToolResult {
-  const res: CallToolResult = { content: [{ type: "text", text }] };
-  if (structured) res.structuredContent = structured;
+  const res: CallToolResult = { content: [{ type: "text", text: redact(text) }] };
+  if (structured) res.structuredContent = redact(structured);
   return res;
 }
 
 /** ساخت پاسخ خطا */
 export function errorResult(message: string, code = "ERROR", structured?: Record<string, unknown>): CallToolResult {
-  return result(message, { ok: false, code, ...(structured ?? {}) });
+  return { ...result(message, { ok: false, code, ...(structured ?? {}) }), isError: true };
 }
 
 /** اجرای یک ابزار با ثبت ممیزی و مدیریت خطا */
@@ -31,14 +32,16 @@ export async function audited(
   const started = Date.now();
   try {
     const res = await fn();
-    const failed = res.isError === true;
+    const failed = res.isError === true || res.structuredContent?.ok === false;
+    const code = res.structuredContent?.code;
+    const outcome = code === 'REJECTED' ? 'rejected' : code === 'APPROVAL_REQUIRED' ? 'pending' : res.structuredContent?.approval === 'approved' ? 'approved' : approval;
     writeAudit({
       ts: new Date().toISOString(),
       tool,
       app,
       params: maskParams(params),
-      approval: failed ? "error" : approval,
-      result: failed ? "error" : "ok",
+      approval: outcome === 'pending' || outcome === 'rejected' ? outcome : failed ? 'error' : outcome,
+      result: outcome === 'rejected' ? 'rejected' : failed ? 'error' : 'ok',
       durationMs: Date.now() - started,
       detail: firstText(res),
     });

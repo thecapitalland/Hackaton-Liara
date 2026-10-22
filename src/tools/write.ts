@@ -22,6 +22,8 @@ import { liaraGet, liaraPost } from "../liara/client.js";
 import { EP } from "../liara/endpoints.js";
 import { audited, bullets, faTime, result } from "./common.js";
 import { parsePlans } from "./read.js";
+import { assertPreflight } from '../liara/preflight-gate.js';
+import { redact } from '../redact.js';
 
 const WRITE_ANNOTATIONS = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } as const;
 
@@ -48,6 +50,28 @@ export interface ActionSpec {
 }
 
 const ACTIONS = new Map<string, ActionSpec>();
+const appName = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/);
+const variable = z.object({ key: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), value: z.string() });
+const actionSchemas: Record<string, z.ZodType> = {
+  liara_create_app: z.object({ name: appName, planID: z.string().min(1), platform: z.enum(['node','docker','python','static']), bundlePlanID: z.string().optional() }),
+  liara_deploy: z.object({ app: appName, path: z.string().min(1) }),
+  liara_restart: z.object({ app: appName }),
+  liara_scale: z.object({ app: appName, on: z.boolean() }),
+  liara_resize: z.object({ app: appName, planID: z.string().min(1) }),
+  liara_set_env: z.object({ app: appName, variables: z.array(variable), unset: z.array(z.string()).optional() }),
+  liara_add_domain: z.object({ app: appName, domain: z.string().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/i) }),
+  liara_enable_ssl: z.object({ domain: z.string().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/i) }),
+};
+
+async function checkScope(kind: string, params: Record<string, unknown>): Promise<string | null> {
+  if (kind !== 'liara_enable_ssl') return requireAllowedApp(String(params.app ?? params.name ?? ''));
+  for (const app of config.allowedApps) {
+    const { data } = await liaraGet<any>(EP.listDomains, { query: { project: app } });
+    const rows = Array.isArray(data) ? data : data?.domains ?? [];
+    if (rows.some((r: any) => r.name === params.domain)) return null;
+  }
+  return '❌ دامنه به هیچ اپ مجازی متصل نیست.';
+}
 
 function registerAction(spec: ActionSpec): void {
   ACTIONS.set(spec.kind, spec);
@@ -71,8 +95,9 @@ const SIMPLE_CHOICES: ApprovalChoice[] = [
 
 async function getProjectEnvs(app: string): Promise<{ key: string; value: string }[]> {
   const { data } = await liaraGet<Record<string, unknown>>(EP.getProject(app));
-  const envs = (data ?? {})["envs"];
-  if (!Array.isArray(envs)) return [];
+  const project = (data?.project ?? data) as Record<string, unknown>;
+  const envs = project["envs"];
+  if (!Array.isArray(envs)) throw new Error('ساختار envs شناخته نشد؛ برای جلوگیری از حذف متغیرها عملیات متوقف شد.');
   return envs.map((e) => {
     if (e && typeof e === "object") {
       const o = e as Record<string, unknown>;
@@ -89,7 +114,7 @@ async function findPlan(planID: string) {
 }
 
 function requireAllowedApp(app: string | undefined): string | null {
-  if (!app) return null;
+  if (!app) return '❌ نام اپ الزامی است.';
   if (!isAllowedApp(app)) {
     return fa.appNotAllowed(app, config.allowedApps);
   }
@@ -118,7 +143,7 @@ registerAction({
   kind: "liara_create_app",
   risk: "medium",
   impact: "ساخت اپ جدید (مصرف منابع و احتمال هزینهٔ پلن)",
-  appScoped: false,
+  appScoped: true,
   describe: (p) =>
     `ساخت اپ «${String(p["name"] ?? "")}» با پلن ${String(p["planID"] ?? "?")} روی پلتفرم ${String(p["platform"] ?? "node")} در حساب لیارا.`,
   choices: () => SIMPLE_CHOICES,
@@ -126,7 +151,7 @@ registerAction({
     const name = String(p["name"] ?? "");
     const planID = String(p["planID"] ?? "");
     const platform = String(p["platform"] ?? "node");
-    const body: Record<string, unknown> = { name, planID, platform };
+    const body: Record<string, unknown> = { name, planID, platform, ...(p.bundlePlanID ? { bundlePlanID: p.bundlePlanID } : {}) };
     const { data } = await liaraPost<Record<string, unknown>>(EP.createProject, body);
     const id = (data ?? {})["projectID"] ?? (data ?? {})["id"] ?? name;
     return {
@@ -219,7 +244,7 @@ registerAction({
     const app = String(p["app"] ?? "");
     await liaraPost(EP.restart(app), {});
     return {
-      text: [`✅ سرویس «${app}» ری‌استارت شد.`, "ℹ️ برای اطمینان از نتیجه، verify_fix را اجرا کنید."].join("\n"),
+      text: [`✅ درخواست ری‌استارت «${app}» پذیرفته شد.`, "ℹ️ وضعیت نهایی هنوز تأیید نشده؛ verify_fix را اجرا کنید."].join("\n"),
       structured: { ok: true, app, action: "restart" },
     };
   },
@@ -240,7 +265,7 @@ registerAction({
     const on = p["on"] !== false;
     await liaraPost(EP.scale(app), { scale: on ? 1 : 0 });
     return {
-      text: `✅ سرویس «${app}» ${on ? "روشن" : "خاموش"} شد.`,
+      text: `✅ درخواست ${on ? 'روشن‌کردن' : 'خاموش‌کردن'} «${app}» پذیرفته شد؛ با liara_status نتیجه را بررسی کنید.`,
       structured: { ok: true, app, scale: on ? 1 : 0 },
     };
   },
@@ -375,8 +400,9 @@ export async function runGuardedAction(
     return { res: result(`❌ عملیات ناشناخته: ${kind}`, { ok: false }), executed: false };
   }
 
-  const app = params["app"] ? String(params["app"]) : undefined;
-  const notAllowed = spec.appScoped ? requireAllowedApp(app) : null;
+  actionSchemas[kind]?.parse(params);
+  const app = String(params['app'] ?? params['name'] ?? '') || undefined;
+  const notAllowed = await checkScope(kind, params);
   if (notAllowed) {
     return { res: result(notAllowed, { ok: false, code: "APP_NOT_ALLOWLISTED" }), executed: false };
   }
@@ -403,17 +429,21 @@ export async function runGuardedAction(
     return {
       res: result(
         `${pendingMessage(outcome.record)}\n📌 ${summaryFa}`,
-        { ok: false, code: "APPROVAL_REQUIRED", approval: outcome.record },
+        { ok: false, code: "APPROVAL_REQUIRED", approval: redact(outcome.record) },
       ),
       executed: false,
       approvalId: outcome.record.approvalId,
     };
   }
 
-  const actionResult = await spec.run(params);
+  assertPreflight();
+  const actionResult = await audited(kind, app, params, async () => {
+    const action = await spec.run(params);
+    return result(action.text, action.structured);
+  }, 'approved');
   return {
-    res: result(actionResult.text, { approval: "approved", ...(actionResult.structured ?? {}) }),
-    executed: true,
+    res: actionResult,
+    executed: !actionResult.isError && actionResult.structuredContent?.ok !== false,
   };
 }
 
@@ -614,7 +644,8 @@ export function registerWriteTools(server: McpServer): void {
           );
         }
         const merged = app ? { ...params, app } : { ...params };
-        const notAllowed = spec.appScoped ? requireAllowedApp(app) : null;
+        actionSchemas[kind]?.parse(merged);
+        const notAllowed = await checkScope(kind, merged);
         if (notAllowed) return result(notAllowed, { ok: false, code: "APP_NOT_ALLOWLISTED" });
 
         const { createPendingApproval } = await import("../approval.js");
@@ -660,9 +691,11 @@ export function registerWriteTools(server: McpServer): void {
         if (!spec) {
           return result(`❌ نوع عملیات ناشناخته: ${rec.tool}`, { ok: false, code: "UNKNOWN_ACTION" });
         }
-        const notAllowed = spec.appScoped ? requireAllowedApp(rec.app) : null;
+        actionSchemas[rec.tool]?.parse(rec.params);
+        const notAllowed = await checkScope(rec.tool, rec.params);
         if (notAllowed) return result(notAllowed, { ok: false, code: "APP_NOT_ALLOWLISTED" });
 
+        assertPreflight();
         const consumed = consumeApproval(approvalId);
         if (!consumed.ok) {
           return result(`❌ ${consumed.reason}`, { ok: false, code: "APPROVAL_INVALID" });

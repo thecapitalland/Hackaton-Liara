@@ -1,0 +1,1 @@
+{"servers":{"agate-liara":{"type":"stdio","command":"node","args":["${workspaceFolder}/dist/index.js"],"cwd":"${workspaceFolder}"}}}

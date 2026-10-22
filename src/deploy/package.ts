@@ -6,7 +6,7 @@
  *  • همیشه排除 می‌شود: `.env`، `node_modules`، `.git`، `.agate` و فایل‌های سیستمی.
  *  • خروجی: یک آرشیو `.tar.gz` در پوشهٔ موقت.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import ignore from "ignore";
@@ -97,8 +97,9 @@ export async function packageSource(root: string): Promise<PackResult> {
   };
   walk(resolvedRoot);
 
-  const outDir = path.join(os.tmpdir(), "agate-liara-pack");
-  mkdirSync(outDir, { recursive: true });
+  const preferred = process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Temp', 'opencode') : os.tmpdir();
+  mkdirSync(preferred, { recursive: true });
+  const outDir = mkdtempSync(path.join(preferred, 'agate-liara-pack-'));
   const archivePath = path.join(outDir, `${path.basename(resolvedRoot)}-source.tar.gz`);
   if (existsSync(archivePath)) {
     unlinkSync(archivePath);

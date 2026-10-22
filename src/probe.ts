@@ -19,6 +19,7 @@ export function isSafeTarget(url: string): boolean {
   }
   if (parsed.protocol !== "https:") return false;
   if (parsed.username || parsed.password) return false;
+  if (parsed.port && parsed.port !== '443') return false;
   return true;
 }
 
@@ -38,7 +39,7 @@ export async function allowedHosts(): Promise<Set<string>> {
       });
       const rows = Array.isArray(data)
         ? data
-        : (data as { data?: unknown[] })?.data ?? [];
+        : (data as { data?: unknown[]; domains?: unknown[] })?.domains ?? (data as { data?: unknown[] })?.data ?? [];
       for (const row of rows) {
         if (!row || typeof row !== "object") continue;
         const obj = row as Record<string, unknown>;
@@ -93,6 +94,7 @@ export interface ProbeOptions {
 export async function httpProbe(target: string, opts: ProbeOptions = {}): Promise<ProbeResult | { error: string }> {
   const count = Math.min(Math.max(opts.count ?? 3, 1), 10);
   const path = opts.path ?? "/health";
+  if (!path.startsWith('/') || path.startsWith('//') || /[\\?#]/.test(path)) return { error: '❌ مسیر پروب نامعتبر است.' };
   const timeoutMs = opts.timeoutMs ?? 10_000;
   const gapMs = opts.gapMs ?? 300;
 
@@ -100,7 +102,7 @@ export async function httpProbe(target: string, opts: ProbeOptions = {}): Promis
   if (resolved.error) return { error: resolved.error };
 
   const base = resolved.url;
-  const url = `${base}${path.startsWith("/") ? path : `/${path}`}`;
+  const url = new URL(path, new URL(base).origin).toString();
   const samples: ProbeSample[] = [];
 
   for (let i = 0; i < count; i++) {
@@ -110,7 +112,7 @@ export async function httpProbe(target: string, opts: ProbeOptions = {}): Promis
     try {
       const res = await fetch(url, {
         method: "GET",
-        redirect: "follow",
+        redirect: "manual",
         headers: { Accept: "application/json,text/plain;q=0.9,*/*;q=0.8" },
         signal: controller.signal,
       });
@@ -136,7 +138,7 @@ export async function httpProbe(target: string, opts: ProbeOptions = {}): Promis
     .sort((a, b) => a - b);
   const p50 = latencies.length ? latencies[Math.floor(latencies.length / 2)]! : null;
 
-  const ok = samples.length > 0 && samples.every((s) => (s.status ?? 0) >= 200 && (s.status ?? 0) < 400);
+  const ok = samples.length > 0 && samples.every((s) => (s.status ?? 0) >= 200 && (s.status ?? 0) < 300);
 
   return {
     url,

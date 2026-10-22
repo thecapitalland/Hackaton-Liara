@@ -6,6 +6,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
+import { redact } from './redact.js';
 
 export type ApprovalOutcome =
   | "auto"
@@ -41,7 +42,7 @@ export function auditPath(): string {
 /** ثبت یک رویداد ممیزی. هیچ‌گاه خطای ثبت، اجرای ابزار را متوقف نمی‌کند. */
 export function writeAudit(entry: AuditEntry): void {
   try {
-    const line = JSON.stringify(entry);
+    const line = JSON.stringify(redact(entry));
     appendFileSync(auditPath(), `${line}\n`, "utf8");
   } catch {
     /* ممیزی نباید جریان کار را بشکند */

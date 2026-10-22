@@ -65,7 +65,7 @@ export function parseLogs(raw: unknown): LogLine[] {
       safeStringify(obj);
     const s = sanitizeLogText(rawMessage);
     const ts = firstString(obj, ["timestamp", "time", "date", "datetime", "created_at", "createdAt", "@timestamp"]) ?? null;
-    const level = firstString(obj, ["level", "severity", "levelname"]) ?? guessLevel(s.text);
+    const level = firstString(obj, ["level", "severity", "levelname", "type"]) ?? guessLevel(s.text);
     out.push({ ts, level, message: s.text, raw: row });
   }
   return out;
@@ -101,6 +101,13 @@ export function parseEvents(raw: unknown): EventItem[] {
 
 /** تبدیل پاسخ خام متریک به سری زمانی عددی */
 export function parseSeries(raw: unknown, name: string, unit: string): Series | null {
+  const report = raw as { result?: { values?: [number, string | number][] }[] } | null;
+  if (Array.isArray(report?.result) && report.result.some(r => Array.isArray(r.values))) {
+    // Official Reports schema: per-applet series. Do not guess units or sum replicas.
+    if (report.result.length !== 1) return null;
+    const points = (report.result[0]?.values ?? []).filter(v => Number.isFinite(Number(v[1]))).map(v => ({ts: new Date(v[0] * 1000).toISOString(), value: Number(v[1])}));
+    return points.length ? { name, unit: 'raw (واحد API تأیید نشده)', points } : null;
+  }
   let rows: unknown[] = [];
   if (Array.isArray(raw)) rows = raw;
   else if (raw && typeof raw === "object") {
@@ -209,19 +216,23 @@ export function stats(points: { value: number }[]): { min: number; max: number; 
  */
 export function cpuPercent(series: Series | null, plan?: PlanLimits | null): { avg: number; max: number; last: number } | null {
   if (!series || !series.points.length) return null;
+  if (series.unit !== '%' && series.unit !== 'cores' && series.unit !== 'ratio') return null;
   const s = stats(series.points);
   const cores = plan?.cpuCores && plan.cpuCores > 0 ? plan.cpuCores : undefined;
   let avg = s.avg;
   let max = s.max;
-  if (cores && max <= cores && max > 0) {
+  let last = s.last;
+  if (series.unit === 'cores' && cores) {
     avg = (avg / cores) * 100;
     max = (max / cores) * 100;
-  } else if (max <= 1.0001 && max > 0) {
+    last = (last / cores) * 100;
+  } else if (series.unit === 'ratio') {
     // داده‌ها به‌صورت نسبت (0..1)
     avg *= 100;
     max *= 100;
+    last *= 100;
   }
-  return { avg, max, last: s.last };
+  return { avg, max, last };
 }
 
 /* ───────────────────────────── تشخیص ───────────────────────────── */
@@ -307,7 +318,7 @@ const memoryLeak: Detector = {
         notes.push("سری حافظه در بازهٔ اخیر یکنواخت صعودی است.");
       }
       const planRam = plan?.ramMB;
-      if (planRam && planRam > 0) {
+      if (planRam && planRam > 0 && memory.unit === 'MB') {
         const lastMb = s.last;
         const pctOfPlan = (lastMb / planRam) * 100;
         evidenceIds.push(
@@ -439,7 +450,7 @@ const slowResponses: Detector = {
       return null;
     }
     const cpuStat = cpuPercent(cpu, ctx.input.plan);
-    const cpuNormal = cpuStat ? cpuStat.avg <= 85 : true;
+    const cpuNormal = cpuStat ? cpuStat.avg <= 85 : false;
     const evidenceIds = [
       ctx.addEvidence(
         "probe",
@@ -453,7 +464,7 @@ const slowResponses: Detector = {
     return {
       id: "slow_responses",
       rank: 0,
-      cause: "کندی پاسخ (p50 بالای ۱۵۰۰ms) با CPU در محدودهٔ نرمال",
+      cause: cpuNormal ? 'کندی پاسخ (p50 بالای ۱۵۰۰ms) با CPU نرمال' : 'کندی پاسخ (p50 بالای ۱۵۰۰ms)؛ CPU نرمال تأیید نشده است',
       confidence: cpuNormal ? 0.6 : 0.3,
       evidenceIds,
       kind: "observed",
@@ -527,7 +538,7 @@ const missingEnv: Detector = {
     let confidence = 0;
 
     const envLogs = logs.filter((l) =>
-      /undefined is not an object|missing env|is not defined|ENV\s+[A-Z0-9_]+\s+not set|Cannot read properties of undefined/i.test(
+      /missing env|ENV\s+[A-Z0-9_]+\s+not set/i.test(
         l.message,
       ),
     );
@@ -584,7 +595,8 @@ const crashLoop: Detector = {
           .join("، ")}»`,
       ),
     ];
-    const withinWindow = restarts.filter((e) => e.ts && Date.now() - Date.parse(e.ts) <= 10 * 60 * 1000);
+    const withinWindow = restarts.filter((e) => e.ts && Date.now() - Date.parse(e.ts) >= 0 && Date.now() - Date.parse(e.ts) <= 10 * 60 * 1000);
+    if (withinWindow.length < 2) return null;
     if (withinWindow.length >= 2) {
       evidenceIds.push(ctx.addEvidence("events", `دست‌کم ${withinWindow.length} کرش در ۱۰ دقیقهٔ اخیر رخ داده است.`));
     }

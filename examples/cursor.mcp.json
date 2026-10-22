@@ -1,0 +1,1 @@
+{"mcpServers":{"agate-liara":{"type":"stdio","command":"node","args":["${workspaceFolder}/dist/index.js"],"envFile":"${workspaceFolder}/.env"}}}

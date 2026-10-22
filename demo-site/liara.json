@@ -1,0 +1,5 @@
+{
+  "app": "agate-liara",
+  "platform": "node",
+  "port": 3000
+}

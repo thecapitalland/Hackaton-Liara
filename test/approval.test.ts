@@ -8,6 +8,7 @@ import {
   consumeApproval,
   createPendingApproval,
   hashParams,
+  setApprovalStatus,
   validateApproval,
 } from "../src/approval.js";
 
@@ -38,6 +39,8 @@ test("تأیید معلق: معتبر، مصرف‌شدنی و تک‌مصرف",
   assert.equal(rec.status, "pending");
   assert.ok(validateApproval(rec).ok);
 
+  assert.equal(consumeApproval(rec.approvalId).ok, false);
+  setApprovalStatus(rec.approvalId, 'approved');
   const consumed = consumeApproval(rec.approvalId);
   assert.equal(consumed.ok, true);
 

@@ -10,6 +10,7 @@
 import { config, hasToken } from "../config.js";
 import { fa } from "../i18n/fa.js";
 import { ERR } from "./endpoints.js";
+import { assertPreflight } from './preflight-gate.js';
 
 export type ErrorCode =
   | "AUTH_REQUIRED"
@@ -68,6 +69,7 @@ export function buildUrl(
   query?: RequestOptions["query"],
 ): string {
   const url = new URL(pathname.startsWith("/") ? pathname : `/${pathname}`, base);
+  if (url.origin !== new URL(base).origin) throw new Error('مسیر API نمی‌تواند میزبان را تغییر دهد.');
   if (query) {
     for (const [k, v] of Object.entries(query)) {
       if (v === undefined || v === null || v === "") continue;
@@ -156,6 +158,7 @@ async function attempt<T>(
       method,
       headers: headersFor(opts),
       signal: controller.signal,
+      redirect: 'error',
     };
     if (opts.body !== undefined) {
       const isForm = opts.body instanceof FormData;
@@ -192,6 +195,7 @@ export async function liaraRequest<T = unknown>(
   if (!hasToken()) {
     throw new LiaraError(ERR.AUTH_REQUIRED, fa.missingToken);
   }
+  if ((opts.method ?? 'GET') !== 'GET') assertPreflight();
   const base = opts.base ?? config.apiBase;
   const fallbackBase = opts.fallbackBase ?? config.apiBaseFallback;
   const isGet = (opts.method ?? "GET") === "GET";

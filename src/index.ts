@@ -9,6 +9,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { setElicitor } from "./approval.js";
 import { config } from "./config.js";
+import { fa } from './i18n/fa.js';
+import { audited, errorResult } from './tools/common.js';
 import { registerReadTools } from "./tools/read.js";
 import { registerWriteTools } from "./tools/write.js";
 import { registerCompositeTools } from "./tools/composite.js";
@@ -67,6 +69,13 @@ export function createServer(): McpServer {
     };
   });
 
+  // Wrap all registrations, including composites, for audit/error coverage.
+  const register = server.registerTool.bind(server);
+  server.registerTool = ((name: string, definition: any, handler: any) => (register as any)(name, definition,
+    async (args: any, extra: any) => audited(name, args?.app, args, async () => {
+      if (!config.token && !['ping','audit_tail','guide_domain_registration','guide_github_deploy'].includes(name)) return errorResult(fa.missingToken, 'AUTH_REQUIRED');
+      return handler(args, extra);
+    }))) as typeof server.registerTool;
   registerReadTools(server);
   registerWriteTools(server);
   registerCompositeTools(server);

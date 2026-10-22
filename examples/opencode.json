@@ -1,0 +1,1 @@
+{"$schema":"https://opencode.ai/config.json","mcp":{"servers":{"agate-liara":{"type":"local","command":["node","dist/index.js"],"cwd":".","environment":{"AGATE_ALLOWED_APPS":"agate-liara"}}}}}

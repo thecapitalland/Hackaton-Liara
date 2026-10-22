@@ -72,6 +72,5 @@ export const fa = {
 /** ماسک کردن مقدار متغیر محیطی برای نمایش امن */
 export function maskValue(value: string): string {
   if (!value) return "(empty)";
-  if (value.length <= 4) return "••••";
-  return `${value.slice(0, 2)}${"•".repeat(Math.min(8, value.length - 4))}${value.slice(-2)}`;
+  return "••••";
 }

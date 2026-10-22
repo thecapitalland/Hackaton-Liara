@@ -1,0 +1,8 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "title":"ApprovalRequest","type":"object",
+  "required":["approvalId","tool","params","summaryFa","risk","impact","hash","expiresAt","status"],
+  "properties":{
+    "approvalId":{"type":"string"},"tool":{"type":"string"},"app":{"type":"string"},"params":{"type":"object"},"summaryFa":{"type":"string"},"risk":{"enum":["low","medium","high"]},"impact":{"type":"string"},"hash":{"type":"string","pattern":"^[a-f0-9]{64}$"},"expiresAt":{"type":"string","format":"date-time"},"status":{"enum":["pending","approved","rejected","expired","used"]}
+  }
+}

@@ -24,6 +24,8 @@
     "test": "tsx --test \"test/**/*.test.ts\"",
     "smoke": "tsx scripts/smoke.ts",
     "preflight": "tsx scripts/preflight.ts",
+    "approve": "tsx scripts/approve.ts",
+    "secret-scan": "tsx scripts/secret-scan.ts",
     "demo": "node demo-site/server.mjs",
     "demo:test": "node demo-site/test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"

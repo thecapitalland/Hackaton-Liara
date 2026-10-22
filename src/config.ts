@@ -21,8 +21,8 @@ export const PACKAGE_ROOT = path.resolve(here, "..");
  */
 function loadDotEnv(): void {
   const candidates = [
-    path.join(PACKAGE_ROOT, ".env"),
     path.join(process.cwd(), ".env"),
+    path.join(PACKAGE_ROOT, ".env"),
   ];
   for (const file of candidates) {
     if (existsSync(file)) {

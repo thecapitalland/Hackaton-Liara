@@ -8,6 +8,7 @@
 import { z } from "zod";
 import { config } from "../config.js";
 import type { Evidence, Hypothesis } from "../types.js";
+import { redact } from '../redact.js';
 
 const llmHypothesisSchema = z.object({
   id: z.string().min(1),
@@ -42,7 +43,7 @@ export async function rankWithLlm(args: {
   }
 
   const evidenceBrief = args.evidence
-    .map((e) => `- [${e.id}] (${e.source}) ${e.observation}`)
+    .map((e) => `- [${e.id}] (${e.source}) ${redact(e.observation)}`)
     .join("\n");
   const hypothesisBrief = args.hypotheses
     .map((h) => `- ${h.id} (confidence=${h.confidence.toFixed(2)}, evidence=${h.evidenceIds.join(",")}) : ${h.cause}`)

@@ -154,7 +154,7 @@ export function validateApproval(
   if (rec.status !== "pending" && rec.status !== "approved") {
     return { ok: false, reason: "وضعیت درخواست تأیید نامعتبر است." };
   }
-  if (new Date(rec.expiresAt).getTime() < Date.now()) {
+  if (!Number.isFinite(Date.parse(rec.expiresAt)) || new Date(rec.expiresAt).getTime() <= Date.now()) {
     setApprovalStatus(rec.approvalId, "expired");
     return { ok: false, reason: "مهلت این درخواست (۱۰ دقیقه) تمام شده است." };
   }
@@ -171,6 +171,7 @@ export function consumeApproval(approvalId: string): { ok: true; record: Approva
   if (!rec) return { ok: false, reason: "درخواست تأیید پیدا نشد." };
   const check = validateApproval(rec);
   if (!check.ok) return check;
+  if (rec.status !== 'approved') return { ok: false, reason: 'ابتدا کاربر باید درخواست را با npm run approve -- <approvalId> تأیید کند.' };
   const store = loadStore();
   store.approvals[approvalId] = { ...rec, status: "used", usedAt: new Date().toISOString() };
   saveStore(store);
@@ -225,7 +226,7 @@ export async function requireApproval(req: ApprovalRequest): Promise<ApprovalOut
   if (elicitor) {
     try {
       const res = await elicitor(req.summaryFa, req.choices, req.impact);
-      if (res.approved && res.choice) {
+      if (res.approved && res.choice && res.choice !== 'cancel' && req.choices.some(c => c.value === res.choice)) {
         return { mode: "approved", choice: res.choice };
       }
       return { mode: "rejected", reason: res.reason ?? "کاربر لغو کرد." };
@@ -244,7 +245,8 @@ export function pendingMessage(record: ApprovalRecord): string {
     `⚠️ اثر: ${record.impact}`,
     `🔑 شناسهٔ تأیید: ${record.approvalId}`,
     `⏱️ مهلت: تا ${new Date(record.expiresAt).toLocaleTimeString("fa-IR")} (۱۰ دقیقه)`,
-    `▶️ برای اجرا: execute_action(approvalId="${record.approvalId}")`,
+    `▶️ کاربر در ترمینال: npm run approve -- ${record.approvalId}`,
+    `▶️ سپس: execute_action(approvalId="${record.approvalId}")`,
   ];
   return lines.join("\n");
 }
