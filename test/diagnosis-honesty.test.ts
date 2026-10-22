@@ -3,7 +3,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildLlmPrompt, stripBugMode } from "../src/diagnose/llm.js";
+import { buildLlmPrompt, rankWithLlm, stripBugMode } from "../src/diagnose/llm.js";
 import type { Evidence, Hypothesis } from "../src/types.js";
 
 const evidence: Evidence[] = [
@@ -60,4 +60,10 @@ test("پرامپت فقط اجزای مجاز را دارد", () => {
   assert.match(prompt.system, /فقط از شواهد داده‌شده استفاده کن/);
   assert.match(prompt.user, /شواهد:/);
   assert.match(prompt.user, /JSON خروجی:/);
+});
+
+test("بدون علت قانونی، LLM فراخوانی نمی‌شود", async () => {
+  const result = await rankWithLlm({ app: "agate-liara", hypotheses: [], evidence: [] });
+  assert.equal(result.usedLlm, false);
+  assert.match(result.note ?? "", /LLM فراخوانی نشد/);
 });

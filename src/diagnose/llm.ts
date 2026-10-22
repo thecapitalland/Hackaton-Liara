@@ -96,6 +96,12 @@ export async function rankWithLlm(args: {
   evidence: Evidence[];
 }): Promise<LlmRankResult> {
   const fallback: LlmRankResult = { hypotheses: args.hypotheses, usedLlm: false };
+  if (args.hypotheses.length === 0) {
+    return {
+      ...fallback,
+      note: "علت قانونی برای رتبه‌بندی وجود ندارد؛ LLM فراخوانی نشد.",
+    };
+  }
   if (!config.llmEnabled) {
     return { ...fallback, note: "LLM تنظیم نشده — تحلیل کاملاً بر پایهٔ قواعد." };
   }

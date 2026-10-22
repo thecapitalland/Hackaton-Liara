@@ -96,11 +96,11 @@ No live provider write was performed for these policy tests. The leak scenario's
 | Check | Result | Evidence |
 |---|---|---|
 | `npm run typecheck` | PASS | `tsc -p tsconfig.json --noEmit` |
-| `npm test` | PASS | **58/58**; adds three honesty checks in `test/diagnosis-honesty.test.ts` |
+| `npm test` | PASS | **59/59**; adds four honesty/guard checks in `test/diagnosis-honesty.test.ts` |
 | Prompt leakage test | PASS | `buildLlmPrompt` output contains no `BUG_MODE`, `bugMode`, or injected mode value (`error500`) |
 | Env input | NOT USED | `gatherDiagnosis` passes `env:null`; no env values or key names are sent to detectors or the LLM |
 | `/health` body | NOT USED | `diagnose` probes `/` and uses status/latency only; `httpProbe` reads and discards the body without parsing |
-| Live read-only diagnosis | PASS | `inc_3e6c6448` returned `diagnosisInputExcludes:["env","BUG_MODE","health.body"]`; env evidence is absent |
+| Live read-only diagnosis | PASS | `inc_e7699495` returned `diagnosisInputExcludes:["env","BUG_MODE","health.body"]`; evidence sources were metrics/events/probe, no env. This healthy run had no hypotheses, so rules/`inconclusive` was returned and LLM was intentionally not called. |
 | Exact prompt inspection | PASS | `.agate/show-prompt.ts` printed system/user prompt; only app, symptom, legal candidate causes, evidence, and `JSON خروجی:` are present |
 
 This is a local/unit verification plus one read-only live diagnosis. No live provider mutation was made for the honesty tests. The blind test itself waits for a separately injected mode and is not claimed as passed.
