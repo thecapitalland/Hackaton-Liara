@@ -14,6 +14,7 @@ import { httpProbe, probeSummary } from "../probe.js";
 import { readAuditTail } from "../audit.js";
 import { audited, bullets, faTime, result } from "./common.js";
 import type { EventItem, LogLine, PlanLimits, Series } from "../types.js";
+import { fetchPlanCatalog, pairLabel } from '../liara/plans.js';
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } as const;
 
@@ -63,7 +64,7 @@ export function parsePlans(data: unknown): PlanLimits[] {
     if (obj['available'] === false) continue;
     const planID = str(obj, ["planID", "id", "planId", "_id"]);
     if (!planID) continue;
-    const bundleGroup = envelope?.plans?.projectBundlePlans?.[planID] ?? (!planID.includes('g2') && planID !== 'free' ? envelope?.plans?.projectBundlePlans?.g1 : undefined);
+    const bundleGroup = envelope?.plans?.projectBundlePlans?.[planID];
     const basicBundle = bundleGroup ? Object.entries(bundleGroup).filter(([,b]) => b.available).sort(([,a],[,b]) => Number(a.price) - Number(b.price))[0] : undefined;
     const resourceMonthly = typeof obj.displayPrice === 'number' ? obj.displayPrice : typeof obj.price === 'number' && obj.RAM ? obj.price * 720 : undefined;
     const monthlyPrice = resourceMonthly !== undefined ? Math.round(resourceMonthly + (basicBundle?.[1]?.displayPrice ?? 0)) : undefined;
@@ -374,19 +375,8 @@ export function registerReadTools(server: McpServer): void {
     },
     async () =>
       audited("liara_plans", undefined, {}, async () => {
-        const { data } = await liaraGet<unknown>(EP.me);
-        const plans = parsePlans(data);
-        if (!plans.length) {
-          return result(
-            `${fa.plansHeader}\n⚠️ ساختار پلن‌ها در پاسخ API متفاوت بود؛ جزئیات در structuredContent آمده است.`,
-            { ok: true, plans: [], raw: data },
-          );
-        }
-        const lines = plans.map(
-          (p) =>
-            `• ${p.planID}${p.name ? ` (${p.name})` : ""} — RAM: ${p.ramMB ? `${p.ramMB}MB` : "?"} | CPU: ${p.cpuCores ? `${p.cpuCores} هسته` : "?"}${p.price ? ` | قیمت: ${p.price}` : ""}${p.region ? ` | منطقه: ${p.region}` : ""}`,
-        );
-        return result(`${fa.plansHeader}\n${bullets(lines)}`, { ok: true, plans });
+        const catalog = await fetchPlanCatalog();
+        return result(`${fa.plansHeader}\n${catalog.pairs.length ? catalog.pairs.map(p => '• '+pairLabel(p)).join('\n') : '❌ ترکیب فعال و قیمت‌دار پیدا نشد.'}\n⚠️ available=true تضمین پذیرش POST نیست.`, {ok:true,...catalog});
       }),
   );
 

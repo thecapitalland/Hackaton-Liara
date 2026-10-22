@@ -1,5 +1,14 @@
 # Verification evidence · 2026-10-22
 
+## Latest exact-catalog fix
+- `npx tsx scripts/plan-catalog.ts`: authenticated GET /v1/me with configured teamID; saved only filtered plans/projects+bundles to `docs/PLAN_CATALOG_LIVE.json`. 15 available Iran project keys; 8 have exact-key active bundle groups. Seven legacy keys have no matching bundle group and are excluded from create candidates.
+- Owner selected `small-g2/basic` at displayed combined 750000 Tomans/month. Selection only; no provider mutation authorized or executed in this phase. Prior standard retry was explicitly rejected and audited locally.
+- `npm run build`: PASS, exit 0.
+- `npm test`: PASS, 36/36, 0 failed (~1.57s). Four catalog tests cover strict availability/region filtering, exact-key join, unknown prices, quote changes, and rejection before any mocked POST.
+- `npm run secret-scan`: PASS, 60 commit-eligible files; configured secrets not detected (not a universal secret detector).
+- Actual stdio `liara_create_app` with old ir-small/basic request: blocked at fresh catalog validation, before approval/POST. This is a negative read-only validation check, not a new failed provider create request.
+- Successful create/deploy remains unverified; `available:true` does not negate the previous provider `g2_plan_unavailable` response.
+
 ## Latest live continuation (supersedes historical network blocker below)
 - Read-only preflight: **4/4 HTTP 200** after owner hosts update; `.agate/preflight-1792678971580.json` is the latest rerun before resource creation.
 - Actual MCP stdio `deploy_project` used for plan proposal and create approval requests.

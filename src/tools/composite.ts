@@ -21,6 +21,7 @@ import { askChoice } from "../approval.js";
 import { bullets, faTime, result } from "./common.js";
 import { extractDnsRecords, runGuardedAction } from "./write.js";
 import { parsePlans } from "./read.js";
+import { fetchPlanCatalog, pairLabel } from '../liara/plans.js';
 import type {
   Evidence,
   Hypothesis,
@@ -225,10 +226,8 @@ async function ensureApp(
     if (!(error instanceof LiaraError) || error.status !== 404) throw error;
   }
 
-  const { data } = await liaraGet<unknown>(EP.me);
-  const allPlans = parsePlans(data);
-  const plans = allPlans.filter(p => p.bundlePlanID && p.region === 'iran' && (desiredPlan ? p.planID === desiredPlan || p.planID?.includes('g2') : p.planID?.includes('g2')));
-  if (!plans.length) {
+  const catalog = await fetchPlanCatalog();
+  if (!catalog.pairs.length) {
     return {
       app,
       created: false,
@@ -236,81 +235,27 @@ async function ensureApp(
     };
   }
 
-  const options = pickPlanOptions(plans, desiredPlan);
-  let chosen = options[1] ?? options[0]!;
-  if (desiredPlan) {
-    const explicit = options.find(o => o.planID === desiredPlan);
-    if (!explicit) throw new Error('پلن انتخاب‌شده در فهرست قابل استفاده پیدا نشد.');
-    chosen = explicit;
-  }
-
-  const selection = await askChoice(
-    `اپ «${app}» روی لیارا وجود ندارد. یک پلن انتخاب کنید:\n${options
-      .map((o, i) => `${i + 1}) ${o.labelFa}${o.recommended ? " ← پیشنهادی" : ""}`)
-      .join("\n")}`,
-    options.map((o, i) => ({
-      value: o.planID,
-      labelFa: `${i + 1}) ${o.labelFa}`,
-      descriptionFa: o.descriptionFa,
-      recommended: o.recommended,
-    })),
-    "ساخت اپ ممکن است هزینهٔ پلن داشته باشد.",
-  );
-  if (selection) {
-    chosen = options.find((o) => o.planID === selection) ?? chosen;
-  } else if (!desiredPlan) {
-    return { app, created: false, note: `⏳ انتخاب پلن لازم است. گزینه‌ها:\n${options.map(o => o.labelFa + (o.descriptionFa ? ' — ' + o.descriptionFa : '')).join('\n')}\nبرای ساخت، liara_create_app را با planID انتخابی اجرا کنید؛ سپس deploy_project را دوباره صدا بزنید.` };
+  const options = catalog.pairs.slice(0,3);
+  let chosen = desiredPlan && bundlePlanID ? catalog.pairs.find(p => p.planID === desiredPlan && p.bundlePlanID === bundlePlanID) : undefined;
+  if (desiredPlan || bundlePlanID) {
+    if (!chosen) throw new Error('ترکیب صریح planID و bundlePlanID باید زیر کلید دقیق API موجود و فعال باشد.');
+  } else {
+    const selection = await askChoice(`اپ «${app}» وجود ندارد؛ یک ترکیب پلن/بسته انتخاب کنید.`,
+      options.map((p,i) => ({value: `${p.planID}/${p.bundlePlanID}`, labelFa: pairLabel(p), recommended:i===0})),
+      'هزینهٔ منابع و بسته با هم نمایش داده شده؛ انتخاب به‌تنهایی مجوز ساخت نیست.');
+    chosen = options.find(p => `${p.planID}/${p.bundlePlanID}` === selection);
+    if (!chosen) return {app,created:false,note:`⏳ انتخاب ترکیب لازم است:\n${options.map(pairLabel).join('\n')}\nهر دو planID و bundlePlanID را صریحاً انتخاب کنید؛ هیچ تغییری اعمال نشد.`};
   }
 
   const out = await runGuardedAction("liara_create_app", {
     name: app,
     planID: chosen.planID,
     platform,
-    bundlePlanID: bundlePlanID ?? plans.find(p => p.planID === chosen.planID)?.bundlePlanID,
+    bundlePlanID: chosen.bundlePlanID,
     network,
   });
   const ok = (out.res.structuredContent as { ok?: boolean } | undefined)?.ok === true;
   return { app, created: ok, planID: chosen.planID, note: ok ? undefined : String(out.res.content[0]?.type === 'text' ? out.res.content[0].text : '') };
-}
-
-/** انتخاب سه گزینهٔ پلن: ارزان‌ترین / پیشنهادی / با حاشیهٔ رشد */
-export function pickPlanOptions(
-  plans: PlanLimits[],
-  desiredPlan?: string,
-): { planID: string; labelFa: string; descriptionFa?: string; recommended?: boolean }[] {
-  const sorted = [...plans].sort((a, b) => (a.ramMB ?? 0) - (b.ramMB ?? 0));
-  const cheapest = sorted[0];
-  const largest = sorted[2] ?? sorted[sorted.length - 1];
-  const middle = sorted[1] ?? cheapest;
-
-  const desired = desiredPlan ? plans.find((p) => p.planID === desiredPlan) : undefined;
-  const recommended = desired ?? middle ?? largest ?? cheapest;
-
-  const out = [
-    {
-      planID: cheapest?.planID ?? "",
-      labelFa: `ارزان‌ترین — ${cheapest?.planID ?? "?"}${cheapest?.ramMB ? ` (${cheapest.ramMB}MB)` : ""}`,
-      descriptionFa: cheapest?.price ? `قیمت: ${cheapest.price}` : undefined,
-    },
-    {
-      planID: recommended?.planID ?? "",
-      labelFa: `پیشنهادی — ${recommended?.planID ?? "?"}${recommended?.ramMB ? ` (${recommended.ramMB}MB)` : ""}`,
-      descriptionFa: recommended?.price ? `قیمت: ${recommended.price}` : undefined,
-      recommended: true,
-    },
-    {
-      planID: largest?.planID ?? "",
-      labelFa: `با حاشیهٔ رشد — ${largest?.planID ?? "?"}${largest?.ramMB ? ` (${largest.ramMB}MB)` : ""}`,
-      descriptionFa: largest?.price ? `قیمت: ${largest.price}` : undefined,
-    },
-  ];
-
-  const seen = new Set<string>();
-  return out.filter((o) => {
-    if (!o.planID || seen.has(o.planID)) return false;
-    seen.add(o.planID);
-    return true;
-  });
 }
 
 /* ─────────────────────────── تشخیص ─────────────────────────── */

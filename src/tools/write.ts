@@ -24,6 +24,7 @@ import { audited, bullets, faTime, result } from "./common.js";
 import { parsePlans } from "./read.js";
 import { assertPreflight } from '../liara/preflight-gate.js';
 import { redact } from '../redact.js';
+import { quoteCreate, assertQuoteUnchanged, pairLabel } from '../liara/plans.js';
 
 const WRITE_ANNOTATIONS = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } as const;
 
@@ -53,7 +54,7 @@ const ACTIONS = new Map<string, ActionSpec>();
 const appName = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/);
 const variable = z.object({ key: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), value: z.string() });
 const actionSchemas: Record<string, z.ZodType> = {
-  liara_create_app: z.object({ name: appName, planID: z.string().min(1), platform: z.enum(['node','docker','python','static']), bundlePlanID: z.string().optional(), network: z.string().optional() }),
+  liara_create_app: z.object({ name: appName, planID: z.string().min(1), platform: z.enum(['node','docker','python','static']), bundlePlanID: z.string().min(1), network: z.string().optional() }),
   liara_create_network: z.object({ app: appName, networkName: appName }),
   liara_deploy: z.object({ app: appName, path: z.string().min(1) }),
   liara_restart: z.object({ app: appName }),
@@ -65,6 +66,7 @@ const actionSchemas: Record<string, z.ZodType> = {
 };
 
 async function checkScope(kind: string, params: Record<string, unknown>): Promise<string | null> {
+  if (kind === 'liara_create_app') return requireAllowedApp(String(params.name ?? ''));
   if (kind !== 'liara_enable_ssl') return requireAllowedApp(String(params.app ?? params.name ?? ''));
   for (const app of config.allowedApps) {
     const { data } = await liaraGet<any>(EP.listDomains, { query: { project: app } });
@@ -157,9 +159,10 @@ registerAction({
   impact: "ساخت اپ جدید (مصرف منابع و احتمال هزینهٔ پلن)",
   appScoped: true,
   describe: (p) =>
-    `ساخت اپ «${String(p["name"] ?? "")}» با پلن ${String(p["planID"] ?? "?")}، بستهٔ ${String(p['bundlePlanID'] ?? 'نامشخص')} و شبکهٔ ${String(p.network ?? 'نامشخص')} روی پلتفرم ${String(p["platform"] ?? "node")}.`,
+    `ساخت اپ «${String(p.name)}»: ${pairLabel(p.quote as any)}؛ شبکهٔ ${String(p.network ?? 'نامشخص')}، پلتفرم ${String(p.platform)}.`,
   choices: () => SIMPLE_CHOICES,
   run: async (p) => {
+    assertQuoteUnchanged(p.quote, await quoteCreate(p));
     const name = String(p["name"] ?? "");
     const planID = String(p["planID"] ?? "");
     const platform = String(p["platform"] ?? "node");
@@ -419,6 +422,7 @@ export async function runGuardedAction(
     return { res: result(notAllowed, { ok: false, code: "APP_NOT_ALLOWLISTED" }), executed: false };
   }
 
+  if (kind === 'liara_create_app') params = { ...params, quote: await quoteCreate(params) };
   const summaryFa = spec.describe(params);
   const outcome = await requireApproval({
     tool: kind,
@@ -472,7 +476,7 @@ export function registerWriteTools(server: McpServer): void {
       inputSchema: {
         name: z.string().min(1).describe("نام اپ"),
         planID: z.string().min(1).describe("شناسهٔ پلن (از liara_plans)"),
-        bundlePlanID: z.string().optional().describe('شناسهٔ بستهٔ امکانات از plans.projectBundlePlans'),
+        bundlePlanID: z.string().min(1).describe('شناسهٔ بستهٔ فعال زیر کلید دقیق planID در plans.projectBundlePlans'),
         network: z.string().optional().describe('شناسهٔ شبکهٔ داخلی لیارا'),
         platform: z.enum(["node", "docker", "python", "static"]).default("node").describe("پلتفرم اجرا"),
       },
@@ -657,10 +661,12 @@ export function registerWriteTools(server: McpServer): void {
             { ok: false },
           );
         }
-        const merged = app ? { ...params, app } : { ...params };
+        let merged: Record<string, unknown> = app ? { ...params, app } : { ...params };
         actionSchemas[kind]?.parse(merged);
         const notAllowed = await checkScope(kind, merged);
         if (notAllowed) return result(notAllowed, { ok: false, code: "APP_NOT_ALLOWLISTED" });
+
+        if (kind === 'liara_create_app') merged = { ...merged, quote: await quoteCreate(merged) };
 
         const { createPendingApproval } = await import("../approval.js");
         const record = createPendingApproval({

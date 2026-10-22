@@ -63,6 +63,12 @@ Approved network creation succeeded: response `{network:{_id}}`; reconciliation 
 
 Public health request failed with Node DNS `ENOTFOUND agate-liara.liara.run` (no HTTP response). No network workaround applied, as instructed by the owner.
 
+### Strict catalog contract (latest)
+
+`src/liara/plans.ts` filters `plans.projects` with `available === true && region === "iran"`, then joins bundles **only** at `plans.projectBundlePlans[planID]`, keeping bundles with `available === true`. Legacy `g1.default` is not a same-key match for `ir-small` and is no longer a fallback. Unknown prices are excluded. Candidates are sorted by sum of resource and bundle monthly prices (`displayPrice`, otherwise numeric `price * 720`, as in official CLI).
+
+Exact filtered API JSON (without user/team/token fields): `docs/PLAN_CATALOG_LIVE.json`. API-advertised candidates do not imply POST permission or guaranteed service acceptance. Create and propose fetch a server-side quote; execution re-fetches and validates the exact pair and price components before POST. Older approvals without a quote are rejected. No automatic retry with alternative bundles.
+
 Run `npm run preflight` from repository cwd with private `.env`. GETs only: project list, account/plans, existing allowlisted app details/logs v1+v2/events/metrics/domains/releases, all domains, DNS zones. No production apps outside the allowlist are inspected for app-level data.
 
 Output prints HTTP codes and keys/types, never Authorization or env values. Local report: `.agate/preflight-<timestamp>.json`; documentation summary: `docs/PREFLIGHT_LATEST.md` (created only after an actual run). Gate receipt: `.agate/preflight-gate.json`, bound to connection digest, 24h TTL, invalid after token/team/base changes. Any unexplained endpoint failure keeps the gate closed.
