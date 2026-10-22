@@ -59,3 +59,15 @@
 - Root cause: our release body sent `build.location:"."` (source path) instead of the build region. Fixed locally in `buildReleaseBody`: `location` defaults to `iran` (override `LIARA_BUILD_LOCATION`), validated against `iran|germany`; dockerfile remains docker-only. Typecheck PASS, tests 40/40 PASS.
 - `GET /v2/projects/agate-liara/sources` returns 404, so the uploaded sourceID cannot be recovered; a retry needs one new upload and one new release. No automatic retry was performed.
 - Awaiting fresh approval. No further provider write occurred after the 400.
+
+## Third deployment attempt · 2026-10-22 16:03–16:14 UTC
+- Owner approved one retry after the `build.location` fix; `dist` was rebuilt before execution.
+- Upload succeeded; release `6ada364eb3b5ca83e1f16704` was created with `build.location=iran`.
+- Build started (`npm install` via the Liara mirror) but `waitForRelease` reached its 10-minute timeout without a success state; result `status:"timeout"`, `stage:"build"`, `ok:false`. `isDeployed:false`; no retry was attempted.
+- Build-log tail contained repeated ` ---> Using cache` and `> Running npm install...` lines with no completion. The cause is not yet established; any follow-up must be read-only (release status/build logs).
+- Any further deploy attempt requires a fresh approval box. Expired approvals are never auto-renewed.
+
+## Mandatory safety fixes (owner instruction)
+- `scripts/ensure-build.ts`: `ensureBuild()` runs `npm run build` and aborts if it fails. `scripts/mcp-call.ts` and `scripts/smoke.ts` call it before spawning `dist/index.js`; `npm start` also builds via `prestart`. This prevents stale-code execution (the cause of the repeated 400).
+- `src/approval.ts`: terminal states (`expired`, `rejected`, `used`) are immutable; `setApprovalStatus(id,"approved")` after `expiresAt` marks the record expired instead of approving; executing an expired record returns `APPROVAL_EXPIRED` with `freshApprovalRequired:true`, and `scripts/approve.ts` reports that a fresh request is required.
+- Evidence: `npm run typecheck` PASS, `npm run build` PASS, `npm test` 44/44 PASS. New tests cover no-auto-renew of expired approvals, terminal-state immutability, and build-before-run behavior. No provider write was performed as part of these fixes.

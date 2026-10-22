@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { config } from '../src/config.js';
+import { ensureBuild } from './ensure-build.js';
+
+ensureBuild();
 
 const client = new Client({name:'agate-smoke',version:'1.0.0'});
 const offline = process.argv.includes('--offline');

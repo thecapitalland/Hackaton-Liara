@@ -53,3 +53,14 @@ Safety coverage: denial sends zero fetch calls; deploy_project on an existing ap
 Failure history: original demo leak test used heapUsed for Buffers and failed; fixed to inspect external memory as well. A packager test wrongly rejected `.gitignore` and was corrected to reject `.git/`. Initial build wrapper type error fixed and build rerun. These local failures are not hidden as live success.
 
 **Overall: PARTIAL.** Local functional checks pass; live integration acceptance is blocked by name resolution. See LIMITATIONS.md for unimplemented DNS mutation and other gaps. Do not record a successful live demo until preflight, approvals and post-action checks succeed.
+
+## 2026-10-22 — build guard and approval-expiry hardening
+| Check | Result | Evidence |
+|---|---|---|
+| `npm run typecheck` | PASS | src compiles with `--noEmit` |
+| `npm run build` | PASS | `dist` refreshed before any guarded run |
+| `npm test` | PASS | 44/44; adds no-auto-renew, terminal-state immutability, and `ensureBuild` coverage |
+| `scripts/mcp-call.ts ping` | PASS | Build ran first (`npm run build` output precedes MCP response), then stdio ping succeeded |
+| Release `6ada364eb3b5ca83e1f16704` | TIMEOUT | Build reached `npm install`; `waitForRelease` 10-min timeout; no deployed version |
+
+The build guard exists because a stale `dist` re-sent the old `build.location:"."` body and reproduced the 400. Expired approvals can no longer be approved or revived: after `expiresAt`, the record becomes `expired` and execution returns `APPROVAL_EXPIRED` with `freshApprovalRequired:true`.

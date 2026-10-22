@@ -2,6 +2,9 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { readFileSync } from 'node:fs';
+import { ensureBuild } from './ensure-build.js';
+
+ensureBuild();
 
 const name = process.argv[2];
 if (!name) throw new Error('tool name required');

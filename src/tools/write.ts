@@ -12,6 +12,7 @@ import { fa, maskValue } from "../i18n/fa.js";
 import {
   consumeApproval,
   getApproval,
+  isApprovalExpired,
   pendingMessage,
   requireApproval,
   validateApproval,
@@ -705,7 +706,17 @@ export function registerWriteTools(server: McpServer): void {
         }
         const check = validateApproval(rec);
         if (!check.ok) {
-          return result(`❌ ${check.reason}`, { ok: false, code: "APPROVAL_INVALID" });
+          const expired = rec.status === "expired" || isApprovalExpired(rec);
+          return result(
+            expired
+              ? `❌ ${check.reason}\n🔄 برای ادامه یک کادر تأیید تازه لازم است؛ این درخواست منقضی هرگز خودکار تمدید نمی‌شود.`
+              : `❌ ${check.reason}`,
+            {
+              ok: false,
+              code: expired ? "APPROVAL_EXPIRED" : "APPROVAL_INVALID",
+              ...(expired ? { freshApprovalRequired: true } : {}),
+            },
+          );
         }
         const spec = getAction(rec.tool);
         if (!spec) {

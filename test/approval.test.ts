@@ -2,15 +2,29 @@
  * تست‌های موتور تأیید: هش پارامترها، مهلت، تک‌مصرف.
  */
 import assert from "node:assert/strict";
+import { readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { test } from "node:test";
 import {
   canonicalJson,
   consumeApproval,
   createPendingApproval,
+  getApproval,
   hashParams,
+  isApprovalExpired,
   setApprovalStatus,
   validateApproval,
 } from "../src/approval.js";
+
+/** مهلت رکورد ذخیره‌شده را در فایل به گذشته می‌برد (شبیه‌سازی گذر زمان). */
+function forceExpiry(approvalId: string): void {
+  const file = path.join(process.cwd(), ".agate", "approvals.json");
+  const store = JSON.parse(readFileSync(file, "utf8")) as {
+    approvals: Record<string, { expiresAt: string }>;
+  };
+  store.approvals[approvalId]!.expiresAt = new Date(Date.now() - 60_000).toISOString();
+  writeFileSync(file, JSON.stringify(store, null, 2), "utf8");
+}
 
 const baseReq = {
   tool: "liara_restart",
@@ -55,6 +69,43 @@ test("تأیید منقضی رد می‌شود", () => {
   const check = validateApproval(rec);
   assert.equal(check.ok, false);
   assert.match(check.ok === false ? check.reason : "", /مهلت/);
+});
+
+test("تأیید منقضی هرگز خودکار تمدید یا approved نمی‌شود", () => {
+  const rec = createPendingApproval(baseReq);
+  forceExpiry(rec.approvalId);
+
+  const stale = getApproval(rec.approvalId)!;
+  assert.equal(isApprovalExpired(stale), true);
+
+  // تلاش برای تأیید پس از پایان مهلت: باید رکورد را منقضی کند، نه تأیید.
+  setApprovalStatus(rec.approvalId, "approved");
+  const after = getApproval(rec.approvalId)!;
+  assert.equal(after.status, "expired");
+
+  // و مصرف/اجرای آن هم ممکن نیست.
+  const consumed = consumeApproval(rec.approvalId);
+  assert.equal(consumed.ok, false);
+  assert.match(consumed.ok === false ? consumed.reason : "", /تازه/);
+});
+
+test("وضعیت‌های پایانی (expired/rejected/used) قابل بازگشت به approved نیستند", () => {
+  const expired = createPendingApproval(baseReq);
+  forceExpiry(expired.approvalId);
+  setApprovalStatus(expired.approvalId, "expired");
+  setApprovalStatus(expired.approvalId, "approved");
+  assert.equal(getApproval(expired.approvalId)!.status, "expired");
+
+  const rejected = createPendingApproval(baseReq);
+  setApprovalStatus(rejected.approvalId, "rejected");
+  setApprovalStatus(rejected.approvalId, "approved");
+  assert.equal(getApproval(rejected.approvalId)!.status, "rejected");
+
+  const used = createPendingApproval(baseReq);
+  setApprovalStatus(used.approvalId, "approved");
+  assert.equal(consumeApproval(used.approvalId).ok, true);
+  setApprovalStatus(used.approvalId, "approved");
+  assert.equal(getApproval(used.approvalId)!.status, "used");
 });
 
 test("تغییر پارامترها پس از تأیید، هش را ناهماهنگ می‌کند", () => {

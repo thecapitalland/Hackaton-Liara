@@ -5,8 +5,9 @@ import { writeAudit } from '../src/audit.js';
 
 const id = process.argv[2] ?? '';
 const rec = getApproval(id);
-if (!rec || !validateApproval(rec).ok || rec.status !== 'pending') {
-  console.error('❌ درخواست معتبر و معلق پیدا نشد.');
+const check = rec ? validateApproval(rec) : { ok: false as const, reason: 'درخواست تأیید پیدا نشد.' };
+if (!rec || !check.ok || rec.status !== 'pending') {
+  console.error(`❌ ${check.ok ? 'درخواست در وضعیت «معلق» نیست؛ تأیید دوباره ممکن نیست.' : check.reason}`);
   process.exitCode = 1;
 } else {
   console.log(`${rec.summaryFa}\n⚠️ ${rec.impact}\nهش: ${rec.hash}`);

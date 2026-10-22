@@ -18,6 +18,9 @@ import { fa } from "./i18n/fa.js";
 export type Risk = "low" | "medium" | "high";
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "used";
 
+/** وضعیت‌هایی که دیگر هرگز تغییر نمی‌کنند (به‌ویژه بازگشت به approved ممنوع است). */
+export const TERMINAL_STATUSES = ["rejected", "expired", "used"] as const;
+
 export interface ApprovalChoice {
   value: string;
   labelFa: string;
@@ -138,10 +141,30 @@ export function setApprovalStatus(approvalId: string, status: ApprovalStatus, ch
   const store = loadStore();
   const rec = store.approvals[approvalId];
   if (!rec) return;
+
+  // وضعیت‌های پایانی قفل‌اند: هرگز به pending/approved برنمی‌گردند.
+  if ((TERMINAL_STATUSES as readonly ApprovalStatus[]).includes(rec.status) && status !== rec.status) {
+    return;
+  }
+
+  // تأیید پس از پایان مهلت = منقضی، نه تأیید. هیچ تمدید خودکاری وجود ندارد.
+  if (status === "approved" && isApprovalExpired(rec)) {
+    rec.status = "expired";
+    rec.decidedAt = new Date().toISOString();
+    saveStore(store);
+    return;
+  }
+
   rec.status = status;
   if (chosen) rec.chosen = chosen;
   rec.decidedAt = new Date().toISOString();
   saveStore(store);
+}
+
+/** آیا مهلت این رکورد (بر اساس زمان فعلی یا زمان داده‌شده) گذشته است؟ */
+export function isApprovalExpired(rec: ApprovalRecord, now = Date.now()): boolean {
+  const expiresAt = Date.parse(rec.expiresAt);
+  return !Number.isFinite(expiresAt) || expiresAt <= now;
 }
 
 /** بررسی اعتبار یک رکورد تأیید: منقضی/استفاده‌شده/هش ناهماهنگ */
@@ -150,13 +173,16 @@ export function validateApproval(
 ): { ok: true } | { ok: false; reason: string } {
   if (rec.status === "used") return { ok: false, reason: "این درخواست قبلاً اجرا شده است (تک‌مصرف)." };
   if (rec.status === "rejected") return { ok: false, reason: "این درخواست لغو شده است." };
-  if (rec.status === "expired") return { ok: false, reason: "مهلت این درخواست تمام شده است." };
+  if (rec.status === "expired") {
+    return { ok: false, reason: "مهلت این درخواست تمام شده است؛ درخواست تأیید تازه لازم است و تمدید خودکار انجام نمی‌شود." };
+  }
   if (rec.status !== "pending" && rec.status !== "approved") {
     return { ok: false, reason: "وضعیت درخواست تأیید نامعتبر است." };
   }
-  if (!Number.isFinite(Date.parse(rec.expiresAt)) || new Date(rec.expiresAt).getTime() <= Date.now()) {
+  if (isApprovalExpired(rec)) {
+    // ثبت انقضا؛ رکورد مرده است و هرگز دوباره approved نمی‌شود.
     setApprovalStatus(rec.approvalId, "expired");
-    return { ok: false, reason: "مهلت این درخواست (۱۰ دقیقه) تمام شده است." };
+    return { ok: false, reason: "مهلت این درخواست (۱۰ دقیقه) تمام شده است؛ درخواست تأیید تازه لازم است و تمدید خودکار انجام نمی‌شود." };
   }
   const expected = hashParams(rec.tool, rec.app, rec.params);
   if (expected !== rec.hash) {
