@@ -341,6 +341,12 @@ export function dominantErrorPattern(logs: LogLine[]): { pattern: string; count:
   return null;
 }
 
+/**
+ * کلیدهایی که عمداً از ورودی تشخیص حذف می‌شوند تا حالت تزریق‌شده
+ * (BUG_MODE) و کلید مدیریت، تحلیل را هدایت نکنند.
+ */
+export const DIAGNOSIS_IGNORED_ENV_KEYS = ["BUG_MODE", "ADMIN_KEY"] as const;
+
 interface DiagnosisBundle {
   incidentId: string;
   app: string;
@@ -424,7 +430,11 @@ async function gatherDiagnosis(app: string, symptom?: string): Promise<Diagnosis
       : [];
     const currentPlanID = String(obj["plan"] ?? obj["planID"] ?? "");
     plan = currentPlanID ? planFromProject(obj, currentPlanID) : null;
-    env = { defined: defined.filter(Boolean), required: [] };
+    const ignored = new Set<string>(DIAGNOSIS_IGNORED_ENV_KEYS);
+    env = {
+      defined: defined.filter((key) => key && !ignored.has(key.toUpperCase())),
+      required: [],
+    };
   } catch {
     notes.push("اطلاعات اپ (متغیرها/پلن) در دسترس نبود.");
   }
@@ -702,13 +712,17 @@ export function registerCompositeTools(server: McpServer): void {
         const analysisLine = bundle.llmUsed
           ? `🧠 منبع تحلیل: LLM (${config.llmModel}) — علت‌ها از detectorهای قانونی، رتبه‌بندی با LLM`
           : `🧠 منبع تحلیل: fallback قانون‌محور${bundle.llmNote ? ` — ${bundle.llmNote}` : ""}`;
-        const text = `${analysisLine}\n${formatIncident(report, bundle.notes)}`;
+        const inputLine =
+          "🧾 ورودی تشخیص: لاگ، متریک، رویدادها و پروب HTTP؛ BUG_MODE و بدنهٔ /health استفاده نمی‌شوند.";
+        const text = `${analysisLine}\n${inputLine}\n${formatIncident(report, bundle.notes)}`;
         return result(text, {
           ok: true,
           analysisSource: bundle.llmUsed ? "llm" : "rules",
           llmUsed: bundle.llmUsed,
           llmNote: bundle.llmNote,
           llmModel: bundle.llmUsed ? config.llmModel : undefined,
+          diagnosisInputExcludes: ["BUG_MODE", "health.body"],
+          diagnosisIgnoredEnvKeys: [...DIAGNOSIS_IGNORED_ENV_KEYS],
           ...report,
           incident: report,
         } as unknown as Record<string, unknown>);

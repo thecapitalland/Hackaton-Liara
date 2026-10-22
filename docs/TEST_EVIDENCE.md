@@ -90,3 +90,17 @@ The earlier `timeout` was client-side: `releaseState()` did not unwrap `data.rel
 | Audit trail | PASS (unit) | `.agate/audit.jsonl` entry records `approval:"auto:balanced"` and the policy notice |
 
 No live provider write was performed for these policy tests. The leak scenario's `BUG_MODE=off` was separately approved by the owner and is verified by `/health` (`bugMode:"off"`, `extMB` stable at 3.5MB).
+
+## 2026-10-22 — diagnosis honesty / blind-input guard
+
+| Check | Result | Evidence |
+|---|---|---|
+| `npm run typecheck` | PASS | `tsc -p tsconfig.json --noEmit` |
+| `npm test` | PASS | **59/59**; adds four honesty checks in `test/diagnosis-honesty.test.ts` |
+| Prompt leakage test | PASS | `buildLlmPrompt` output contains no `BUG_MODE`, `bugMode`, or injected mode value (`error500`) |
+| Env evidence filtering | PASS | `DIAGNOSIS_IGNORED_ENV_KEYS` contains `BUG_MODE` and `ADMIN_KEY`; neither is passed to detectors |
+| `/health` body | NOT USED | `diagnose` probes `/` and uses status/latency only; `httpProbe` reads and discards the body without parsing |
+| Live read-only diagnosis | PASS | `inc_3e6c6448` returned `diagnosisInputExcludes:["BUG_MODE","health.body"]`; env evidence listed only required env (empty) and no `BUG_MODE` |
+| Exact prompt inspection | PASS | `.agate/show-prompt.ts` printed system/user prompt; only app, symptom, legal candidate causes, evidence, and `JSON خروجی:` are present |
+
+This is a local/unit verification plus one read-only live diagnosis. No live provider mutation was made for the honesty tests. The blind test itself waits for a separately injected mode and is not claimed as passed.

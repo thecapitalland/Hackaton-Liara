@@ -115,10 +115,6 @@ export const config = {
   get llmModel(): string {
     return str("LLM_MODEL");
   },
-  /** حالت دمو سایت: off | leak | slow | error500 */
-  get demoBugMode(): string {
-    return str("BUG_MODE", "off");
-  },
   /**
    * سیاست تأیید: strict (پیش‌فرض) | balanced | auto.
    * مقدار ناشناخته امن‌ترین حالت (strict) را فعال می‌کند.

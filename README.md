@@ -65,6 +65,8 @@ flowchart LR
 
 `http_probe(target, path="/health", count=3)` فقط HTTPS دامنه‌های متصل به اپ‌های مجاز را می‌پذیرد و redirect را دنبال نمی‌کند. `diagnose` علاوه بر متریک و لاگ، صفحهٔ `/` را می‌سنجد تا سلامت `/health` خطای صفحهٔ اصلی را پنهان نکند. `verify_fix` همان مسیر baseline را بررسی می‌کند؛ نبودن لاگ یا baseline معتبر را موفقیت گزارش نمی‌کند.
 
+**صداقت تشخیص:** `diagnose` مقدار `BUG_MODE` را از env نمی‌خواند، کلیدهای `BUG_MODE` و `ADMIN_KEY` را از فهرست env ورودی حذف می‌کند و بدنهٔ `/health` را نمی‌خواند؛ فقط status/latency مسیر `/` را می‌سنجد. پرامپت LLM هم از همین ورودی ساخته می‌شود و هر اشارهٔ مستقیم به `BUG_MODE`/`bugMode` با `stripBugMode` حذف می‌شود.
+
 ## تأیید و اجرای امن
 
 قبل از اولین write، `npm run preflight` باید با همان توکن/تیم موفق شود؛ رسید محلی تا ۲۴ ساعت معتبر است. هر اختلاف API را در [LIARA_API.md](docs/LIARA_API.md) ثبت و اصلاح کنید. خطای preflight مانع mutation است؛ retry خودکار برای write نداریم.

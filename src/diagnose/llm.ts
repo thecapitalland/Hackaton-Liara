@@ -30,18 +30,30 @@ export interface LlmRankResult {
   note?: string;
 }
 
-/** مدل فقط اجازهٔ رتبه‌بندی دارد؛ خروجی اعتبارسنجی و در صورت خطا نادیده می‌شود. */
-export async function rankWithLlm(args: {
+export interface LlmPrompt {
+  system: string;
+  user: string;
+}
+
+/**
+ * حذف هر اشارهٔ مستقیم به کنترل‌کنندهٔ تزریق (BUG_MODE/bugMode) از ورودی LLM.
+ * تشخیص باید فقط از لاگ، متریک، رویداد و latency/خطای واقعی انجام شود.
+ */
+export function stripBugMode(text: string): string {
+  return text
+    .replace(/\bBUG_MODE\b\s*[:=]\s*["']?[A-Za-z0-9_-]+["']?/gi, "")
+    .replace(/\bbugMode\b\s*["']?\s*[:=]\s*["']?[A-Za-z0-9_-]+["']?/gi, "")
+    .replace(/\bBUG_MODE\b/gi, "")
+    .replace(/\bbugMode\b/gi, "");
+}
+
+/** ساخت دقیق پرامپت LLM؛ جدا شده تا قابل مشاهده و تست باشد. */
+export function buildLlmPrompt(args: {
   app: string;
   symptom?: string;
   hypotheses: Hypothesis[];
   evidence: Evidence[];
-}): Promise<LlmRankResult> {
-  const fallback: LlmRankResult = { hypotheses: args.hypotheses, usedLlm: false };
-  if (!config.llmEnabled) {
-    return { ...fallback, note: "LLM تنظیم نشده — تحلیل کاملاً بر پایهٔ قواعد." };
-  }
-
+}): LlmPrompt {
   const evidenceBrief = args.evidence
     .map((e) => `- [${e.id}] (${e.source}) ${redact(e.observation)}`)
     .join("\n");
@@ -56,20 +68,39 @@ export async function rankWithLlm(args: {
     "برای هر علت: id (یکی از idهای داده‌شده), rank (۱ تا ۳), confidence (۰ تا ۱), explanationFa (توضیح کوتاه فارسی).",
   ].join("\n");
 
-  const user = [
-    `اپ: ${args.app}`,
-    args.symptom ? `علائم گزارش‌شده: ${args.symptom}` : "",
-    "",
-    "علت‌های کاندید (خروجی detectorهای قانونی):",
-    hypothesisBrief,
-    "",
-    "شواهد:",
-    evidenceBrief,
-    "",
-    "JSON خروجی:",
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const user = stripBugMode(
+    [
+      `اپ: ${args.app}`,
+      args.symptom ? `علائم گزارش‌شده: ${args.symptom}` : "",
+      "",
+      "علت‌های کاندید (خروجی detectorهای قانونی):",
+      hypothesisBrief,
+      "",
+      "شواهد:",
+      evidenceBrief,
+      "",
+      "JSON خروجی:",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+
+  return { system, user };
+}
+
+/** مدل فقط اجازهٔ رتبه‌بندی دارد؛ خروجی اعتبارسنجی و در صورت خطا نادیده می‌شود. */
+export async function rankWithLlm(args: {
+  app: string;
+  symptom?: string;
+  hypotheses: Hypothesis[];
+  evidence: Evidence[];
+}): Promise<LlmRankResult> {
+  const fallback: LlmRankResult = { hypotheses: args.hypotheses, usedLlm: false };
+  if (!config.llmEnabled) {
+    return { ...fallback, note: "LLM تنظیم نشده — تحلیل کاملاً بر پایهٔ قواعد." };
+  }
+
+  const { system, user } = buildLlmPrompt(args);
 
   try {
     const url = `${config.llmBaseUrl.replace(/\/+$/, "")}/chat/completions`;
