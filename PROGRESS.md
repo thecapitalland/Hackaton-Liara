@@ -80,3 +80,4 @@
 - Fix: `unwrapRelease()` in `src/liara/release.ts`, used by `composite.ts` and `liara_release_status`. Regression test added; typecheck PASS, tests **45/45** PASS. No new release was created.
 - Package facts: uploaded archive was demo-site only — 5 files, 11,843 bytes, SHA-256 `30dab33e…c6ebf2`, zero dependencies/devDependencies, no lockfile. Root repo deps/lockfile were not uploaded.
 - Details and recommendations are in `LESSONS.md`.
+- Owner decision: **no new release**. The current `READY` deployment is accepted; no upload/release or any other provider write was performed for this decision.
