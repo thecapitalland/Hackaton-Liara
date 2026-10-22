@@ -104,3 +104,22 @@ No live provider write was performed for these policy tests. The leak scenario's
 | Exact prompt inspection | PASS | `.agate/show-prompt.ts` printed system/user prompt; only app, symptom, legal candidate causes, evidence, and `JSON خروجی:` are present |
 
 This is a local/unit verification plus one read-only live diagnosis. No live provider mutation was made for the honesty tests. The blind test itself waits for a separately injected mode and is not claimed as passed.
+
+## 2026-10-22 — watch_app / npm run watch
+
+| Check | Result | Evidence |
+|---|---|---|
+| `npm run typecheck` | PASS | `tsc -p tsconfig.json --noEmit` |
+| `npm test` | PASS | **68/68**; adds `test/watch.test.ts` and server tool-list/annotation checks |
+| `npm run build` | PASS | `dist` refreshed |
+| `npm run secret-scan` | PASS | 71 commit-eligible files; configured secrets/private-key markers absent (not a universal detector) |
+| `npm run smoke -- --offline` | PASS | Real stdio handshake, discovers 32 tools, ping; live deliberately skipped |
+| Watch thresholds | PASS (unit) | 500 rate strictly >5%, p50 strictly >1500ms, new OOM/restart/crash; exact thresholds do not trigger |
+| Metrics summary | PASS (unit + live) | Official `cpuUsage`/`memoryUsage` array shape parsed; raw units are not guessed |
+| Cooldown | PASS (unit) | Same fingerprint suppressed within cooldown; a different incident is still reported; first run seeds the event watermark |
+| Audit mapping | PASS (unit) | `watch_incident` records `pending`, `approved`, `auto:balanced`, or `not-required` |
+| Approval policy | PASS (unit) | `strict` requires approval; `balanced` treats `BUG_MODE=off` as low-risk automatic |
+| Live `npm run watch -- --once` | PASS (read-only) | All three routes HTTP 200, 0/9 500s, max p50 1163ms, metrics summary present, no new incident |
+| Live remediation | NOT_RUN | `APPROVAL_POLICY=strict`; the healthy live run had no trigger and performed zero provider mutations |
+
+During live validation, a release-lifecycle `destroy` event was initially classified as a restart and produced one incident with no diagnosis hypothesis. The classifier was narrowed to explicit OOM/restart/crash signals; bare `kill`/`destroy`/`stop`/`die` are now ignored because Liara emits them during ordinary release turnover. A regression test covers this. The erroneous incident remains in the local append-only audit log as a truthful record; no audit entry was deleted.

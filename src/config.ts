@@ -125,6 +125,22 @@ export const config = {
       ? (raw as ApprovalPolicy)
       : "strict";
   },
+  /** اپ پیش‌فرض پایش مداوم (اگر خالی باشد، اولین اپ allowlist) */
+  get watchApp(): string {
+    return str("WATCH_APP", config.allowedApps[0] ?? "");
+  },
+  /** فاصلهٔ چرخه‌های پایش؛ حداقل ۱۰ ثانیه برای جلوگیری از فشار روی سرویس */
+  get watchIntervalSec(): number {
+    return Math.min(3600, Math.max(10, int("WATCH_INTERVAL_SEC", 60)));
+  },
+  /** مدت cooldown پس از هر رخداد؛ صفر یعنی غیرفعال */
+  get watchCooldownSec(): number {
+    return Math.min(24 * 3600, Math.max(0, int("WATCH_COOLDOWN_SEC", 300)));
+  },
+  /** آیا watch اجازهٔ اقدام درمانی سیاست‌محور دارد؟ */
+  get watchRemediate(): boolean {
+    return bool("WATCH_REMEDIATE", true);
+  },
   /** آیا لاگ با جزئیات بیشتری نوشته شود؟ */
   get verbose(): boolean {
     return bool("AGATE_VERBOSE", false);

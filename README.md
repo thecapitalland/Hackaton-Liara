@@ -2,7 +2,7 @@
 
 دستیار DevOps/SRE فارسی برای چالش لیارا در هکاتون Starcoach Agentic AI؛ یک سرور TypeScript MCP با انتقال stdio، بدون دیتابیس، LangGraph یا کنسول وب مدیریتی. سایت دمو یک اپ مستقل و عمداً قابل خراب‌کردن است.
 
-**وضعیت:** preflight زنده ۴/۴ موفق است. اپ `agate-liara` با تأیید صریح و یک POST ساخته شد: `small-g2/basic` + شبکهٔ `6ada1e64b3b5ca83e1ee0ce1`؛ GET آن را `ACTIVE` و `isDeployed:false` نشان می‌دهد. هنوز هیچ آپلود، release یا انتشار انجام نشده و دامنه سرویس نمی‌کند. آخرین وضعیت: [PROGRESS.md](PROGRESS.md)، [آزمون‌ها](docs/TEST_EVIDENCE.md) و [محدودیت‌ها](docs/LIMITATIONS.md). مخزن خصوصی است و push انجام نشده است.
+**وضعیت:** preflight زنده ۴/۴ موفق است. اپ `agate-liara` با تأیید صریح و یک POST ساخته شد: `small-g2/basic` + شبکهٔ `6ada1e64b3b5ca83e1ee0ce1`؛ GET آن را `ACTIVE` و `isDeployed:false` نشان می‌دهد. آخرین وضعیت: [PROGRESS.md](PROGRESS.md)، [آزمون‌ها](docs/TEST_EVIDENCE.md) و [محدودیت‌ها](docs/LIMITATIONS.md). مخزن خصوصی است.
 
 ## اجرای سریع
 
@@ -51,6 +51,10 @@ flowchart LR
 | `ADMIN_KEY` | کلید پنل آزمایش سایت دمو؛ بدون آن پنل بسته است |
 | `BUG_MODE` | حالت اولیهٔ سایت دمو: `off`, `leak`, `slow`, `error500` |
 | `APPROVAL_POLICY` | `strict` (پیش‌فرض)، `balanced` یا `auto`؛ جزئیات در بخش «سیاست تأیید» |
+| `WATCH_APP` | اپ پیش‌فرض `npm run watch`؛ پیش‌فرض: اولین عضو `AGATE_ALLOWED_APPS` |
+| `WATCH_INTERVAL_SEC` | فاصلهٔ چرخه‌های پایش؛ پیش‌فرض `60` (حداقل ۱۰) |
+| `WATCH_COOLDOWN_SEC` | مدت خاموشی همان هشدار تکراری پس از هر رخداد؛ پیش‌فرض `300` |
+| `WATCH_REMEDIATE` | اجازهٔ اقدام درمانی سیاست‌محور؛ پیش‌فرض `true` |
 
 اولویت: محیط کلاینت > `.env` در cwd > `.env` در ریشهٔ پکیج. سرور را با cwd همین مخزن اجرا کنید تا approval CLI و preflight از state مشترک استفاده کنند. `.env`، `.agate`، `node_modules` و `dist` gitignored هستند.
 
@@ -60,7 +64,7 @@ flowchart LR
 |---|---|
 | A: خواندنی | `ping`, `liara_status`, `liara_list_apps`, `liara_logs`, `liara_metrics`, `liara_events`, `liara_plans`, `liara_releases`, `http_probe`, `audit_tail`, `liara_plan_price`, `liara_release_status` |
 | B: نوشتنی (مطابق `APPROVAL_POLICY`) | `liara_create_app`, `liara_deploy`, `liara_set_env`, `liara_restart`, `liara_scale`, `liara_resize`, `liara_add_domain`, `liara_enable_ssl`, `propose_action`, `execute_action` |
-| ترکیبی | `deploy_project`, `diagnose`, `apply_fix`, `verify_fix`, `connect_domain`, `watch_after_deploy` |
+| ترکیبی | `deploy_project`, `diagnose`, `apply_fix`, `verify_fix`, `connect_domain`, `watch_after_deploy`, `watch_app` |
 | C: راهنما | `guide_domain_registration`, `guide_rollback`, `guide_github_deploy` |
 
 `http_probe(target, path="/health", count=3)` فقط HTTPS دامنه‌های متصل به اپ‌های مجاز را می‌پذیرد و redirect را دنبال نمی‌کند. `diagnose` علاوه بر متریک و لاگ، صفحهٔ `/` را می‌سنجد تا سلامت `/health` خطای صفحهٔ اصلی را پنهان نکند. `verify_fix` همان مسیر baseline را بررسی می‌کند؛ نبودن لاگ یا baseline معتبر را موفقیت گزارش نمی‌کند.
@@ -117,6 +121,36 @@ npm run approve -- <approvalId>
 # .env
 APPROVAL_POLICY=balanced
 ```
+
+## پایش مداوم
+
+`watch_app` و `npm run watch` یک چرخه را هر `WATCH_INTERVAL_SEC` (پیش‌فرض ۶۰) ثانیه اجرا می‌کنند:
+
+1. پروب `/`، `/api/challenges` و `/api/status`
+2. خواندن خلاصهٔ متریک و رویدادها
+3. اگر نرخ 500 اکیداً بالای ۵٪، p50 یک مسیر بالای ۱۵۰۰ms، یا رویداد **جدید** OOM/ری‌استارت/کرش دیده شود، `diagnose` را خودکار و **بدون env** اجرا می‌کند. وضعیت‌های عادی چرخهٔ release مثل `kill`/`destroy`/`stop`/`die` به‌تنهایی هشدار نیستند
+4. رخداد را در `.agate/audit.jsonl` با `tool: "watch_incident"` ثبت می‌کند
+5. تا `WATCH_COOLDOWN_SEC` (پیش‌فرض ۳۰۰) ثانیه از تکرار همان هشدار جلوگیری می‌کند
+
+اجرای دائمی و یک‌باره:
+
+```powershell
+npm run watch
+npm run watch -- --once
+npm run watch -- --app agate-liara
+```
+
+برای پایش از داخل IDE، ابزار `watch_app(app, cycles=1, intervalSec, remediate)` را صدا بزنید. `cycles=1` یعنی یک چرخه؛ `npm run watch` حلقهٔ دائمی را اجرا می‌کند و فاصلهٔ چرخه‌ها را رعایت می‌کند. هر دو مسیر از یک هستهٔ مشترک در [`src/watch.ts`](src/watch.ts) استفاده می‌کنند.
+
+**اقدام درمانی و APPROVAL_POLICY:** پس از تشخیص، اقدام کم‌خطر این دمو یعنی برگرداندن `BUG_MODE=off` از همان `runGuardedAction` و `decideApproval` عبور می‌کند؛ مسیر تأیید موازی وجود ندارد:
+
+| سیاست | رفتار watch |
+|---|---|
+| `strict` (پیش‌فرض) | کادر تأیید MCP (یا `approvalId` + `npm run approve` در CLI)؛ بدون تأیید هیچ تغییری روی لیارا انجام نمی‌شود. |
+| `balanced` | `BUG_MODE=off` و اقدام‌های `low` خودکار اجرا می‌شوند و در گزارش و audit با `auto:balanced` ثبت می‌شوند. |
+| `auto` | اقدام‌های `low`/`medium` خودکار؛ اقدام‌های `high` همچنان تأیید می‌خواهند. |
+
+**محدودیت‌ها:** خلاصهٔ متریک در دسترس است ولی واحد CPU/حافظه در آن تأیید نشده و عدد خام گزارش می‌شود؛ سری زمانی CPU/حافظه و لاگ زمان اجرا ممکن است 503 یا ناسازگار باشند. watch در این حالت با پروب و رویدادها ادامه می‌دهد و محدودیت را در گزارش می‌آورد. تشخیص عمداً `env` و بدنهٔ `/health` را نمی‌خواند؛ `BUG_MODE=off` فقط یک اقدام درمانی پس از تشخیص است، نه ورودی تشخیص.
 
 ## اتصال MCP در IDE
 

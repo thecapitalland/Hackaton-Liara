@@ -47,6 +47,7 @@ test("سرور MCP ابزارهای مورد انتظار را معرفی می�
     "verify_fix",
     "connect_domain",
     "watch_after_deploy",
+    "watch_app",
     "guide_domain_registration",
     "guide_rollback",
     "guide_github_deploy",
@@ -64,6 +65,7 @@ test("ابزارهای فقط‌خواندنی annotation درست دارند و
   assert.equal(byName.get("liara_logs")?.annotations?.readOnlyHint, true);
   assert.equal(byName.get("liara_restart")?.annotations?.readOnlyHint, false);
   assert.equal(byName.get("deploy_project")?.annotations?.readOnlyHint, false);
+  assert.equal(byName.get("watch_app")?.annotations?.readOnlyHint, false);
 });
 
 test("بدون توکن، ابزار لیارا پیام فارسی راهنما برمی‌گرداند", async () => {

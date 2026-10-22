@@ -14,6 +14,7 @@ import { audited, errorResult } from './tools/common.js';
 import { registerReadTools } from "./tools/read.js";
 import { registerWriteTools } from "./tools/write.js";
 import { registerCompositeTools } from "./tools/composite.js";
+import { registerWatchTools } from "./tools/watch.js";
 
 export const SERVER_NAME = "agate-liara";
 export const SERVER_VERSION = "0.1.0";
@@ -79,6 +80,7 @@ export function createServer(): McpServer {
   registerReadTools(server);
   registerWriteTools(server);
   registerCompositeTools(server);
+  registerWatchTools(server);
 
   return server;
 }

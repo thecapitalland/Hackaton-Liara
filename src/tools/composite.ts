@@ -593,6 +593,68 @@ export function findCodeSuspects(
   return out;
 }
 
+/* ─────────────────────────── اجرای تشخیص ─────────────────────────── */
+
+export interface DiagnosisRun {
+  report: IncidentReport;
+  /** گزارش فارسی کامل، شامل سطر منبع تحلیل و محدودیت‌ها */
+  text: string;
+  analysisLine: string;
+  llmUsed: boolean;
+  llmNote?: string;
+}
+
+/**
+ * یک اجرای کامل diagnose: جمع‌آوری شواهد، رتبه‌بندی، ذخیرهٔ baseline و ساخت گزارش.
+ * watch_app هم از همین مسیر استفاده می‌کند تا env و بدنهٔ /health هرگز وارد
+ * ورودی تشخیص نشوند.
+ */
+export async function runDiagnosis(app: string, symptom?: string): Promise<DiagnosisRun> {
+  const bundle = await gatherDiagnosis(app, symptom);
+  const report: IncidentReport = {
+    incidentId: bundle.incidentId,
+    provider: "liara",
+    appId: app,
+    observedAt: bundle.observedAt,
+    status: bundle.hypotheses.length ? "diagnosed" : "inconclusive",
+    evidence: bundle.evidence,
+    hypotheses: bundle.hypotheses,
+    verification: null,
+    limitations: [
+      "لاگ لیارا استریم نمی‌شود؛ خواندن لاگ بر پایهٔ polling انجام می‌شود.",
+      "نتیجهٔ تشخیص بر پایهٔ شواهد موجود در بازهٔ زمانی انتخابی است، نه دادهٔ کامل.",
+    ],
+  };
+
+  // ذخیرهٔ baseline برای verify_fix
+  const errPattern = dominantErrorPattern(bundle.logs);
+  const probeOk = "error" in bundle.probe ? null : bundle.probe;
+  saveBaseline(app, {
+    incidentId: bundle.incidentId,
+    app,
+    observedAt: bundle.observedAt,
+    planID: bundle.plan?.planID,
+    probe: {
+      url: probeOk?.url ?? "",
+      p50: probeOk?.p50 ?? null,
+      statuses: probeOk?.samples.map((s) => s.status) ?? [],
+      ok: probeOk?.ok ?? false,
+    },
+    cpu: bundle.cpu ? seriesStats(bundle.cpu) : null,
+    memory: bundle.memory ? seriesStats(bundle.memory) : null,
+    errorPattern: errPattern?.pattern,
+    errorsSeen: errPattern?.count ?? 0,
+  });
+
+  const analysisLine = bundle.llmUsed
+    ? `🧠 منبع تحلیل: LLM (${config.llmModel}) — علت‌ها از detectorهای قانونی، رتبه‌بندی با LLM`
+    : `🧠 منبع تحلیل: fallback قانون‌محور${bundle.llmNote ? ` — ${bundle.llmNote}` : ""}`;
+  const inputLine =
+    "🧾 ورودی تشخیص: لاگ، متریک، رویدادها و پروب HTTP؛ env و بدنهٔ /health استفاده نمی‌شوند.";
+  const text = `${analysisLine}\n${inputLine}\n${formatIncident(report, bundle.notes)}`;
+  return { report, text, analysisLine, llmUsed: bundle.llmUsed, llmNote: bundle.llmNote };
+}
+
 /* ─────────────────────────── ثبت ابزارها ─────────────────────────── */
 
 export function registerCompositeTools(server: McpServer): void {
@@ -655,57 +717,16 @@ export function registerCompositeTools(server: McpServer): void {
     },
     async ({ app, symptom }) => {
       try {
-        const bundle = await gatherDiagnosis(app, symptom);
-        const report: IncidentReport = {
-          incidentId: bundle.incidentId,
-          provider: "liara",
-          appId: app,
-          observedAt: bundle.observedAt,
-          status: bundle.hypotheses.length ? "diagnosed" : "inconclusive",
-          evidence: bundle.evidence,
-          hypotheses: bundle.hypotheses,
-          verification: null,
-          limitations: [
-            "لاگ لیارا استریم نمی‌شود؛ خواندن لاگ بر پایهٔ polling انجام می‌شود.",
-            "نتیجهٔ تشخیص بر پایهٔ شواهد موجود در بازهٔ زمانی انتخابی است، نه دادهٔ کامل.",
-          ],
-        };
-
-        // ذخیرهٔ baseline برای verify_fix
-        const errPattern = dominantErrorPattern(bundle.logs);
-        const probeOk = "error" in bundle.probe ? null : bundle.probe;
-        saveBaseline(app, {
-          incidentId: bundle.incidentId,
-          app,
-          observedAt: bundle.observedAt,
-          planID: bundle.plan?.planID,
-          probe: {
-            url: probeOk?.url ?? "",
-            p50: probeOk?.p50 ?? null,
-            statuses: probeOk?.samples.map((s) => s.status) ?? [],
-            ok: probeOk?.ok ?? false,
-          },
-          cpu: bundle.cpu ? seriesStats(bundle.cpu) : null,
-          memory: bundle.memory ? seriesStats(bundle.memory) : null,
-          errorPattern: errPattern?.pattern,
-          errorsSeen: errPattern?.count ?? 0,
-        });
-
-        const analysisLine = bundle.llmUsed
-          ? `🧠 منبع تحلیل: LLM (${config.llmModel}) — علت‌ها از detectorهای قانونی، رتبه‌بندی با LLM`
-          : `🧠 منبع تحلیل: fallback قانون‌محور${bundle.llmNote ? ` — ${bundle.llmNote}` : ""}`;
-        const inputLine =
-          "🧾 ورودی تشخیص: لاگ، متریک، رویدادها و پروب HTTP؛ env و بدنهٔ /health استفاده نمی‌شوند.";
-        const text = `${analysisLine}\n${inputLine}\n${formatIncident(report, bundle.notes)}`;
-        return result(text, {
+        const run = await runDiagnosis(app, symptom);
+        return result(run.text, {
           ok: true,
-          analysisSource: bundle.llmUsed ? "llm" : "rules",
-          llmUsed: bundle.llmUsed,
-          llmNote: bundle.llmNote,
-          llmModel: bundle.llmUsed ? config.llmModel : undefined,
+          analysisSource: run.llmUsed ? "llm" : "rules",
+          llmUsed: run.llmUsed,
+          llmNote: run.llmNote,
+          llmModel: run.llmUsed ? config.llmModel : undefined,
           diagnosisInputExcludes: ["env", "BUG_MODE", "health.body"],
-          ...report,
-          incident: report,
+          ...run.report,
+          incident: run.report,
         } as unknown as Record<string, unknown>);
       } catch (err) {
         return result(`❌ تشخیص ناموفق بود: ${(err as Error).message}`, { ok: false });

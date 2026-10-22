@@ -23,6 +23,7 @@
     "prestart": "npm run build",
     "start": "node dist/index.js",
     "test": "tsx --test \"test/**/*.test.ts\"",
+    "watch": "tsx scripts/watch.ts",
     "smoke": "tsx scripts/smoke.ts",
     "preflight": "tsx scripts/preflight.ts",
     "approve": "tsx scripts/approve.ts",
