@@ -33,7 +33,7 @@ flowchart LR
   MCP --> D[Liara DNS API: read-only preflight]
   MCP -. optional ranking .-> L[OpenAI-compatible LLM]
   MCP -->|HTTPS probe| S[Demo app]
-  MCP --> F[.agate: approvals / audit / baseline]
+  MCP --> F[.agate: approvals / audit / baseline / env-history]
   H[Human] -->|elicitation or local approval CLI| MCP
 ```
 
@@ -63,13 +63,15 @@ flowchart LR
 | سطح | ابزارها |
 |---|---|
 | A: خواندنی | `ping`, `liara_status`, `liara_list_apps`, `liara_logs`, `liara_metrics`, `liara_events`, `liara_plans`, `liara_releases`, `http_probe`, `audit_tail`, `liara_plan_price`, `liara_release_status` |
-| B: نوشتنی (مطابق `APPROVAL_POLICY`) | `liara_create_app`, `liara_deploy`, `liara_set_env`, `liara_restart`, `liara_scale`, `liara_resize`, `liara_add_domain`, `liara_enable_ssl`, `propose_action`, `execute_action` |
+| B: نوشتنی (مطابق `APPROVAL_POLICY`) | `liara_create_app`, `liara_deploy`, `liara_set_env`, `rollback_last_env_change`, `liara_restart`, `liara_scale`, `liara_resize`, `liara_add_domain`, `liara_enable_ssl`, `propose_action`, `execute_action` |
 | ترکیبی | `deploy_project`, `diagnose`, `apply_fix`, `verify_fix`, `connect_domain`, `watch_after_deploy`, `watch_app` |
 | C: راهنما | `guide_domain_registration`, `guide_rollback`, `guide_github_deploy` |
 
-`http_probe(target, path="/health", count=3)` فقط HTTPS دامنه‌های متصل به اپ‌های مجاز را می‌پذیرد و redirect را دنبال نمی‌کند. `diagnose` علاوه بر متریک و لاگ، صفحهٔ `/` را می‌سنجد تا سلامت `/health` خطای صفحهٔ اصلی را پنهان نکند. `verify_fix` همان مسیر baseline را بررسی می‌کند؛ نبودن لاگ یا baseline معتبر را موفقیت گزارش نمی‌کند.
+`http_probe(target, path="/health", count=3)` فقط HTTPS دامنه‌های متصل به اپ‌های مجاز را می‌پذیرد و redirect را دنبال نمی‌کند. `diagnose` علاوه بر متریک و لاگ، صفحهٔ `/` را می‌سنجد تا سلامت `/health` خطای صفحهٔ اصلی را پنهان نکند. بازهٔ پیش‌فرض شواهد و رویدادها **۱۰ دقیقه حول زمان رخداد** است و رویداد قدیمی‌تر یا بدون timestamp معتبر کنار گذاشته می‌شود. `verify_fix` همان مسیر baseline را بررسی می‌کند؛ نبودن لاگ یا baseline معتبر را موفقیت گزارش نمی‌کند.
 
-**صداقت تشخیص:** `diagnose` هیچ متغیر محیطی (env) را نمی‌خواند؛ نه مقدار `BUG_MODE` و نه فهرست کلیدها. بدنهٔ `/health` را parse یا استفاده نمی‌کند (فقط برای آزادسازی اتصال خوانده و دور ریخته می‌شود) و فقط status/latency مسیر `/` را می‌سنجد. ورودی تشخیص محدود به لاگ، متریک، رویدادها و پروب HTTP است؛ پرامپت LLM از همین ورودی ساخته می‌شود و هر اشارهٔ مستقیم به `BUG_MODE`/`bugMode` با `stripBugMode` حذف می‌شود.
+**صداقت تشخیص:** `diagnose` هیچ **مقدار** env و فهرست کلیدهای env پروژه را از API نمی‌خواند؛ نه مقدار `BUG_MODE` و نه کلیدهای دیگر. بدنهٔ `/health` را parse یا استفاده نمی‌کند (فقط برای آزادسازی اتصال خوانده و دور ریخته می‌شود) و فقط status/latency مسیر `/` را می‌سنجد. ورودی تشخیص محدود به لاگ، متریک، رویدادهای پنجرهٔ ۱۰ دقیقه‌ای رخداد، پروب HTTP و متادیتای audit/release برای «وجود تغییر env» است؛ مقدار env در این مسیر خوانده نمی‌شود. پرامپت LLM از همین ورودی ساخته می‌شود و هر اشارهٔ مستقیم به `BUG_MODE`/`bugMode` با `stripBugMode` حذف می‌شود. تنها استفادهٔ متادیتایی از env این است که «آیا تغییر env دقیقی در ۱۰ دقیقهٔ قبل ثبت شده است؟» تا بین `rollback_last_env_change` و `restart` انتخاب شود؛ مقدارها و فهرست کلیدهای env در ورودی تشخیص/پرامپت LLM نیستند (خروجی خود اقدام rollback ممکن است فقط نام کلیدهای بازگردانده‌شده را گزارش کند).
+
+برای اینکه rollback واقعاً «همان تغییر» را برگرداند، هر `liara_set_env` موفق مقادیر before/after **واقعی** را در `.agate/env-history-<app>.json` ثبت می‌کند؛ این فایل gitignored است، با mode `0600` نوشته می‌شود و هرگز به LLM فرستاده نمی‌شود. بدون این journal، فقط متادیتای audit/release وجود دارد و مقدار قبلی برای rollback دقیق در دسترس نیست.
 
 ## تأیید و اجرای امن
 
@@ -110,12 +112,12 @@ npm run approve -- <approvalId>
 | سیاست | رفتار |
 |---|---|
 | `strict` (پیش‌فرض) | همهٔ اقدام‌های نوشتنی تأیید انسانی می‌خواهند؛ رفتار قبلی. |
-| `balanced` | اقدام‌های `low` و برگشت‌پذیر خودکار اجرا می‌شوند: `restart`، برگرداندن `BUG_MODE=off`، SSL و خواندن لاگ/متریک. تغییر env دیگر، دیپلوی/release جدید و اقدام‌های `medium` تأیید می‌خواهند. |
+| `balanced` | اقدام‌های `low` و برگشت‌پذیر خودکار اجرا می‌شوند: `restart`، `rollback_last_env_change` (فقط وقتی مقدار قبلی در journal محلی ثبت شده باشد)، SSL و خواندن لاگ/متریک. تغییر env عمومی (`liara_set_env`)، دیپلوی/release جدید و اقدام‌های `medium` تأیید می‌خواهند. |
 | `auto` | همهٔ اقدام‌های `low` و `medium` خودکار هستند؛ فقط `high` تأیید می‌خواهد. |
 
 در **همهٔ** سیاست‌ها، اقدام‌های پرخطر یا هزینه‌دار همیشه تأیید می‌خواهند: ساخت اپ/شبکه، تغییر پلن، خاموش‌کردن سرویس، حذف و هر عملیاتی که هزینهٔ اضافه ایجاد کند. این فهرست در `ALWAYS_APPROVAL_KINDS` و به‌صورت risk سطح `high` نگه‌داری می‌شود؛ نبودِ یک اقدام در فهرست به معنی خودکار بودن آن نیست، بلکه ریسک اعلام‌شدهٔ آن ملاک است.
 
-اجرای خودکار در خروجی با عبارت دقیق «اجرای خودکار طبق سیاست balanced» (یا `auto`) و در `.agate/audit.jsonl` با مقدار `approval: "auto:balanced"` ثبت می‌شود. خواندن لاگ و متریک اساساً ابزار فقط‌خواندنی است و هیچ‌گاه تأیید نمی‌خواهد. `propose_action` همچنان عمداً یک درخواست معلق می‌سازد؛ برای اجرای خودکار باید ابزار مستقیم (مثل `liara_restart`) صدا زده شود. مقدار ناشناخته در `APPROVAL_POLICY` امن‌ترین حالت، یعنی `strict`، را فعال می‌کند.
+اجرای خودکار در خروجی با عبارت دقیق «اجرای خودکار طبق سیاست balanced» (یا `auto`) و در `.agate/audit.jsonl` با مقدار `approval: "auto:balanced"` ثبت می‌شود. خواندن لاگ و متریک اساساً ابزار فقط‌خواندنی است و هیچ‌گاه تأیید نمی‌خواهد. `propose_action` همچنان عمداً یک درخواست معلق می‌سازد؛ برای اجرای خودکار باید ابزار مستقیم (مثل `liara_restart` یا `rollback_last_env_change`) صدا زده شود. مقدار ناشناخته در `APPROVAL_POLICY` امن‌ترین حالت، یعنی `strict`، را فعال می‌کند.
 
 ```dotenv
 # .env
@@ -126,11 +128,11 @@ APPROVAL_POLICY=balanced
 
 `watch_app` و `npm run watch` یک چرخه را هر `WATCH_INTERVAL_SEC` (پیش‌فرض ۶۰) ثانیه اجرا می‌کنند:
 
-1. پروب `/`، `/api/challenges` و `/api/status`
-2. خواندن خلاصهٔ متریک و رویدادها
-3. اگر نرخ 500 اکیداً بالای ۵٪، p50 یک مسیر بالای ۱۵۰۰ms، یا رویداد **جدید** OOM/ری‌استارت/کرش دیده شود، `diagnose` را خودکار و **بدون env** اجرا می‌کند. وضعیت‌های عادی چرخهٔ release مثل `kill`/`destroy`/`stop`/`die` به‌تنهایی هشدار نیستند
-4. رخداد را در `.agate/audit.jsonl` با `tool: "watch_incident"` ثبت می‌کند
-5. تا `WATCH_COOLDOWN_SEC` (پیش‌فرض ۳۰۰) ثانیه از تکرار همان هشدار جلوگیری می‌کند
+1. هر سه مسیر `/`، `/api/challenges` و `/api/status` را سه بار پروب می‌کنند (در مجموع ۹ نمونه).
+2. خلاصهٔ متریک و رویدادها را می‌خوانند.
+3. اگر نرخ 500 اکیداً بالای ۵٪، p50 یک مسیر بالای ۱۵۰۰ms، یا رویداد **جدید** OOM/ری‌استارت/کرش دیده شود، `diagnose` را خودکار با **همان ۹ نمونه و همان رویدادهای چرخه** اجرا می‌کنند. بنابراین شمارش‌ها هم‌خوان می‌مانند (مثلاً «۳ از ۹» و نه «۲ از ۳»). شواهد فقط ۱۰ دقیقهٔ قبل از زمان رخداد را می‌بیند و رویداد قدیمی‌تر یا بدون timestamp معتبر کنار گذاشته می‌شود. وضعیت‌های عادی چرخهٔ release مثل `kill`/`destroy`/`stop`/`die` به‌تنهایی هشدار نیستند.
+4. رخداد را در `.agate/audit.jsonl` با `tool: "watch_incident"` ثبت می‌کند.
+5. تا `WATCH_COOLDOWN_SEC` (پیش‌فرض ۳۰۰) ثانیه از تکرار همان هشدار جلوگیری می‌کند.
 
 اجرای دائمی و یک‌باره:
 
@@ -142,19 +144,38 @@ npm run watch -- --app agate-liara
 
 برای پایش از داخل IDE، ابزار `watch_app(app, cycles=1, intervalSec, remediate)` را صدا بزنید. `cycles=1` یعنی یک چرخه؛ `npm run watch` حلقهٔ دائمی را اجرا می‌کند و فاصلهٔ چرخه‌ها را رعایت می‌کند. هر دو مسیر از یک هستهٔ مشترک در [`src/watch.ts`](src/watch.ts) استفاده می‌کنند.
 
-**اقدام درمانی و APPROVAL_POLICY:** پس از تشخیص، اقدام کم‌خطر این دمو یعنی برگرداندن `BUG_MODE=off` از همان `runGuardedAction` و `decideApproval` عبور می‌کند؛ مسیر تأیید موازی وجود ندارد:
+**انتخاب اقدام درمانی:** به LLM فقط اقدام‌های کم‌خطر مجاز نشان داده می‌شود:
+
+- `restart` همیشه گزینهٔ جایگزین است.
+- `rollback_last_env_change` فقط وقتی که یک تغییر env **دقیق و قابل‌بازگشت** در ۱۰ دقیقهٔ قبل در journal محلی ثبت شده باشد.
+- LLM فقط می‌تواند یکی از همین شناسه‌ها را انتخاب کند؛ انتخاب نامعتبر نادیده گرفته می‌شود و قواعد داخلی تصمیم می‌گیرند. این اقدام یک راهکار عمومی env است و به `BUG_MODE` وابسته نیست.
+- اگر journal مقدار before/after را نداشته باشد، تغییر env جدیدتر از رخداد باشد، یا مقدار فعلی با مقدار `after` ثبت‌شده فرق کند، rollback انجام نمی‌شود و `restart` پیشنهاد می‌شود.
+
+هر `liara_set_env` موفق، تنها کلیدهای واقعاً تغییر‌یافته را در `.agate/env-history-<app>.json` ثبت می‌کند. `rollback_last_env_change` فقط همان کلیدها را با مقدار قبلی برمی‌گرداند و کلیدهای دیگر را دست نمی‌زند. فایل journal خام است، gitignored است و هرگز به LLM نمی‌رود.
+
+**اقدام درمانی و APPROVAL_POLICY:** انتخاب راهکار از `runGuardedAction` و `decideApproval` عبور می‌کند؛ مسیر تأیید موازی وجود ندارد:
 
 | سیاست | رفتار watch |
 |---|---|
 | `strict` (پیش‌فرض) | کادر تأیید MCP (یا `approvalId` + `npm run approve` در CLI)؛ بدون تأیید هیچ تغییری روی لیارا انجام نمی‌شود. |
-| `balanced` | `BUG_MODE=off` و اقدام‌های `low` خودکار اجرا می‌شوند و در گزارش و audit با `auto:balanced` ثبت می‌شوند. |
+| `balanced` | `restart` و `rollback_last_env_change` (هر دو `low`) خودکار اجرا می‌شوند و در گزارش و audit با `auto:balanced` ثبت می‌شوند. `liara_set_env` همچنان `medium` و نیازمند تأیید است. |
 | `auto` | اقدام‌های `low`/`medium` خودکار؛ اقدام‌های `high` همچنان تأیید می‌خواهند. |
 
-**محدودیت‌ها:** خلاصهٔ متریک در دسترس است ولی واحد CPU/حافظه در آن تأیید نشده و عدد خام گزارش می‌شود؛ سری زمانی CPU/حافظه و لاگ زمان اجرا ممکن است 503 یا ناسازگار باشند. watch در این حالت با پروب و رویدادها ادامه می‌دهد و محدودیت را در گزارش می‌آورد. تشخیص عمداً `env` و بدنهٔ `/health` را نمی‌خواند؛ `BUG_MODE=off` فقط یک اقدام درمانی پس از تشخیص است، نه ورودی تشخیص.
+**محدودیت‌ها:** خلاصهٔ متریک در دسترس است ولی واحد CPU/حافظه در آن تأیید نشده و عدد خام گزارش می‌شود؛ سری زمانی CPU/حافظه و لاگ زمان اجرا ممکن است 503 یا ناسازگار باشند. watch در این حالت با پروب و رویدادها ادامه می‌دهد و محدودیت را در گزارش می‌آورد. تشخیص عمداً مقدار env و بدنهٔ `/health` را نمی‌خواند؛ فقط وجود/زمان تغییر env برای انتخاب اقدام بررسی می‌شود. journal فقط تغییرهایی را می‌داند که از همین MCP انجام شده‌اند؛ تغییر دستی بیرون از MCP حداکثر به‌صورت متادیتای audit/release دیده می‌شود و rollback دقیق برای آن ممکن نیست.
 
 ## اتصال MCP در IDE
 
 نمونه‌های قابل کپی در [examples/](examples/) هستند؛ مسیرها را با مسیر مطلق مخزن خود جایگزین کنید. هیچ فایل نمونه‌ای کلید واقعی ندارد. فرمت‌ها از اسناد رسمی در ۲۰۲۶-۱۰-۲۲ بررسی شدند؛ اتصال واقعی هر IDE جداگانه هنوز NOT_RUN است.
+
+### پیام اتصال
+
+`node dist/index.js` پروتکل MCP را روی **stdout** و یک پیام کوتاه راه‌اندازی را روی **stderr** می‌نویسد. این پیام شامل نسخه، اپ‌های مجاز، وضعیت توکن، سیاست تأیید، اپ/فاصلهٔ پایش و مسیر `cwd` است؛ برای دیدن آن می‌توانید سرور را دستی اجرا کنید. stdout را با `echo` یا لاگ اضافه آلوده نکنید.
+
+```powershell
+node dist/index.js --help
+```
+
+`cwd` مهم است: `.env` و پوشهٔ `.agate` (audit، تأییدها، baseline و journal) نسبت به `cwd` خوانده می‌شوند. اگر کلاینت پیام «آماده» را نشان نداد، اول `npm run build`، سپس `node >= 20` و `cwd` را بررسی کنید. راهنمای بعد از handshake (شامل مسیر شروع و سیاست اقدام کم‌خطر) در `SERVER_INSTRUCTIONS` تعریف شده و کلاینت آن را دریافت می‌کند.
 
 ### VS Code: `.vscode/mcp.json`
 ```json
@@ -182,7 +203,7 @@ cwd = "D:/Hackaton/Liara/Hackaton-Liara"
 tool_timeout_sec = 900
 ```
 
-پس از اتصال، `ping` را اجرا و فهرست ابزارها را مشاهده کنید؛ سپس `liara_list_apps`. کلید را در چت ننویسید. مهلت کلاینت برای deploy باید حدود ۱۵ دقیقه باشد.
+پس از اتصال، `ping` را اجرا و فهرست ابزارها را مشاهده کنید؛ سپس `liara_list_apps` یا `liara_status`. برای رخداد، `diagnose(app, symptom)` و بعد `apply_fix`/`verify_fix`؛ برای پایش، `watch_app`. راهنمای کوتاه این مسیر و سیاست اقدام کم‌خطر در همان handshake (`SERVER_INSTRUCTIONS`) به کلاینت داده می‌شود. کلید را در چت ننویسید. مهلت کلاینت برای deploy باید حدود ۱۵ دقیقه باشد.
 
 منابع قالب‌ها: [VS Code](https://code.visualstudio.com/docs/agent-customization/mcp-servers)، [Cursor](https://cursor.com/docs/context/mcp)، [Codex](https://developers.openai.com/codex/extend/mcp)، [OpenCode V2](https://opencode.ai/v2/docs/mcp-servers).
 
@@ -212,7 +233,7 @@ node --env-file=.env demo-site/server.mjs
 
 | محدودیت API / اجرا | جایگزین |
 |---|---|
-| rollback endpoint ندارد | بررسی release و redeploy سورس قبلی با تأیید |
+| rollback endpoint عمومی ندارد | `rollback_last_env_change` فقط env را از journal محلی برمی‌گرداند؛ برای برگشت کد/سورس، release قبلی را با تأیید دوباره deploy کنید |
 | log streaming ندارد | polling |
 | endpoint مستقل plans ندارد | `GET /v1/me` |
 | health-check API ندارد | HTTP probe مستقل |

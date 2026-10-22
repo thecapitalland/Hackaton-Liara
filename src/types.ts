@@ -14,7 +14,13 @@ export interface Evidence {
   collectedAt: string;
 }
 
-export type RemedyKind = "restart" | "resize" | "code_fix" | "set_env" | "scale";
+export type RemedyKind =
+  | "restart"
+  | "resize"
+  | "code_fix"
+  | "set_env"
+  | "scale"
+  | "rollback_last_env_change";
 
 export interface Hypothesis {
   /** شناسهٔ علت (مثلاً memory_leak) */
@@ -46,6 +52,9 @@ export interface IncidentReport {
   status: IncidentStatus;
   evidence: Evidence[];
   hypotheses: Hypothesis[];
+  /** اقدام کم‌خطر انتخاب‌شده برای رفع خودکار (توسط LLM یا قواعد) */
+  selectedRemedy?: RemedyKind;
+  remedySource?: "llm" | "rules";
   verification?: Record<string, unknown> | null;
   limitations: string[];
 }

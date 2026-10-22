@@ -34,6 +34,7 @@ test("سرور MCP ابزارهای مورد انتظار را معرفی می�
     "liara_create_app",
     "liara_deploy",
     "liara_set_env",
+    "rollback_last_env_change",
     "liara_restart",
     "liara_scale",
     "liara_resize",
@@ -64,6 +65,7 @@ test("ابزارهای فقط‌خواندنی annotation درست دارند و
   assert.equal(byName.get("liara_status")?.annotations?.readOnlyHint, true);
   assert.equal(byName.get("liara_logs")?.annotations?.readOnlyHint, true);
   assert.equal(byName.get("liara_restart")?.annotations?.readOnlyHint, false);
+  assert.equal(byName.get("rollback_last_env_change")?.annotations?.readOnlyHint, false);
   assert.equal(byName.get("deploy_project")?.annotations?.readOnlyHint, false);
   assert.equal(byName.get("watch_app")?.annotations?.readOnlyHint, false);
 });

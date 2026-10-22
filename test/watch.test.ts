@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { decideApproval } from "../src/approval.js";
 import type { AuditEntry } from "../src/audit.js";
 import { result } from "../src/tools/common.js";
-import type { DiagnosisRun } from "../src/tools/composite.js";
+import type { DiagnosisOptions, DiagnosisRun } from "../src/tools/composite.js";
 import type { GuardedOutcome } from "../src/tools/write.js";
 import type { EventItem, IncidentReport, ProbeResult } from "../src/types.js";
 import {
@@ -25,6 +25,8 @@ import {
   runWatchCheck,
   summaryNumber,
   triggersFingerprint,
+  watchProbeResult,
+  type WatchRemediationContext,
   type WatchSnapshot,
 } from "../src/watch.js";
 
@@ -52,7 +54,10 @@ function snapshot(routes: ReturnType<typeof routeResult>[], overrides: Partial<W
   };
 }
 
-function diagnosis(): DiagnosisRun {
+function diagnosis(
+  selectedRemedy: DiagnosisRun["selectedRemedy"] = "restart",
+  rollbackAvailable = false,
+): DiagnosisRun {
   const report: IncidentReport = {
     incidentId: "inc_test",
     provider: "liara",
@@ -72,6 +77,9 @@ function diagnosis(): DiagnosisRun {
         remedyText: ["اصلاح کد"],
       },
     ],
+    selectedRemedy,
+    remedySource: "rules",
+    rollbackAvailable,
     limitations: [],
   };
   return {
@@ -79,6 +87,9 @@ function diagnosis(): DiagnosisRun {
     text: "🧠 منبع تحلیل: fallback قانون‌محور\nگزارش تشخیص تست",
     analysisLine: "🧠 منبع تحلیل: fallback قانون‌محور",
     llmUsed: false,
+    selectedRemedy,
+    remedySource: "rules",
+    rollbackAvailable,
   };
 }
 
@@ -119,6 +130,61 @@ test("نرخ 500 و p50 فقط بالای آستانه‌ها هشدار می‌
     [],
   );
   assert.equal(noFalsePositive.length, 0);
+});
+
+test("watchProbeResult همان ۹ نمونه و ۳ خطای ۵۰۰ چرخه را می‌سازد", () => {
+  const routes = [
+    routeResult("/", probe([500, 500, 500], 3200)),
+    routeResult("/api/challenges", probe([200, 200, 200], 900)),
+    routeResult("/api/status", probe([200, 200, 200], 200)),
+  ];
+  const p = watchProbeResult(app, snapshot(routes));
+  assert.equal(p.samples.length, 9);
+  assert.equal(p.samples.filter((s) => s.status === 500).length, 3);
+  assert.equal(p.p50, 3200);
+  assert.equal(p.ok, false);
+  assert.equal(p.url, `https://${app}.liara.run/`);
+});
+
+test("diagnose نمونه‌های همان چرخه و انتخاب راهکار را دریافت می‌کند", async () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "agate-watch-probe-"));
+  try {
+    let capturedOptions: DiagnosisOptions | undefined;
+    let capturedRemediation: WatchRemediationContext | undefined;
+    const result = await runWatchCheck({
+      app,
+      stateDir,
+      cooldownSec: 60,
+      deps: {
+        now: () => new Date("2026-10-22T12:00:00.000Z"),
+        probeRoute: async (_target: string, routePath: string): Promise<ProbeResult> =>
+          routePath === "/" ? probe([500, 500, 500], 100) : probe([200, 200, 200], 100),
+        readMetrics: async () => ({ available: true, cpu: 1, memory: 40 }),
+        readEvents: async () => [],
+        diagnose: async (_app, _symptom, options) => {
+          capturedOptions = options;
+          return diagnosis("rollback_last_env_change", true);
+        },
+        remediate: async (_app, context) => {
+          capturedRemediation = context;
+          return automaticRemediation();
+        },
+        audit: () => undefined,
+      },
+    });
+
+    assert.ok(result.incident);
+    assert.equal(capturedOptions?.probe?.samples.length, 9);
+    assert.equal(capturedOptions?.probe?.samples.filter((s) => s.status === 500).length, 3);
+    assert.equal(capturedOptions?.probe?.p50, 100);
+    assert.equal(capturedOptions?.eventWindowMinutes, 10);
+    assert.equal(capturedOptions?.incidentAt, "2026-10-22T12:00:00.000Z");
+    assert.equal(capturedRemediation?.selectedRemedy, "rollback_last_env_change");
+    assert.equal(capturedRemediation?.rollbackAvailable, true);
+    assert.equal(result.incident.remediation?.kind, "rollback_last_env_change");
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
 });
 
 test("خلاصهٔ متریک شکل رسمی Reports و مقدار ساده را بدون حدس واحد می‌خواند", () => {
@@ -340,31 +406,37 @@ test("اولین چرخه رویدادهای قدیمی را هشدار نمی�
   }
 });
 
-test("اقدام watch از همان سیاست تأیید عبور می‌کند: strict تأیید، balanced low خودکار", () => {
-  const params = {
-    app,
-    variables: [{ key: "BUG_MODE", value: "off" }],
-  };
+test("اقدام rollback از همان سیاست تأیید عبور می‌کند: strict تأیید، balanced low خودکار", () => {
+  const params = { app, incidentAt: "2026-10-23T12:00:00.000Z" };
 
   const strict = decideApproval({
-    tool: "liara_set_env",
+    tool: "rollback_last_env_change",
     params,
-    declaredRisk: "medium",
+    declaredRisk: "low",
     policy: "strict",
   });
   assert.equal(strict.requiresApproval, true);
   assert.equal(strict.automatic, false);
 
   const balanced = decideApproval({
-    tool: "liara_set_env",
+    tool: "rollback_last_env_change",
     params,
-    declaredRisk: "medium",
+    declaredRisk: "low",
     policy: "balanced",
   });
   assert.equal(balanced.risk, "low");
   assert.equal(balanced.requiresApproval, false);
   assert.equal(balanced.automatic, true);
   assert.match(balanced.autoNoticeFa ?? "", /balanced/);
+
+  const setEnv = decideApproval({
+    tool: "liara_set_env",
+    params: { app, variables: [{ key: "BUG_MODE", value: "off" }] },
+    declaredRisk: "medium",
+    policy: "balanced",
+  });
+  assert.equal(setEnv.risk, "medium");
+  assert.equal(setEnv.requiresApproval, true);
 });
 
 test("نتیجهٔ اقدام در ممیزی: pending، auto:balanced و approved درست نگاشت می‌شوند", () => {

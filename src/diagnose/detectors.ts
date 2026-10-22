@@ -247,6 +247,8 @@ export interface DetectionInput {
   env: { defined: string[]; required: string[] } | null;
   plan?: PlanLimits | null;
   collectedAt?: string;
+  /** پنجرهٔ رویداد برای بازبینی داخلی detector؛ پیش‌فرض ۱۰ دقیقه. */
+  windowMinutes?: number;
 }
 
 interface Detector {
@@ -586,20 +588,28 @@ const crashLoop: Detector = {
     const { events } = ctx.input;
     const restarts = events.filter((e) => /restart|crash|kill|reboot|exit/i.test(`${e.type} ${e.message}`));
     if (restarts.length < 2) return null;
+    const nowMs = Date.parse(ctx.now);
+    const windowMs = (ctx.input.windowMinutes ?? 10) * 60 * 1000;
+    const withinWindow = restarts.filter(
+      (e) =>
+        e.ts &&
+        nowMs - Date.parse(e.ts) >= 0 &&
+        nowMs - Date.parse(e.ts) <= windowMs,
+    );
+    if (withinWindow.length < 2) return null;
     const evidenceIds = [
       ctx.addEvidence(
         "events",
-        `${restarts.length} رویداد ری‌استارت/کرش ثبت شد: «${restarts
+        `${withinWindow.length} رویداد ری‌استارت/کرش ثبت شد: «${withinWindow
           .slice(0, 3)
           .map((e) => `${e.type}${e.ts ? ` @${e.ts}` : ""}`)
           .join("، ")}»`,
       ),
+      ctx.addEvidence(
+        "events",
+        `دست‌کم ${withinWindow.length} کرش در ${ctx.input.windowMinutes ?? 10} دقیقهٔ اخیر رخ داده است.`,
+      ),
     ];
-    const withinWindow = restarts.filter((e) => e.ts && Date.now() - Date.parse(e.ts) >= 0 && Date.now() - Date.parse(e.ts) <= 10 * 60 * 1000);
-    if (withinWindow.length < 2) return null;
-    if (withinWindow.length >= 2) {
-      evidenceIds.push(ctx.addEvidence("events", `دست‌کم ${withinWindow.length} کرش در ۱۰ دقیقهٔ اخیر رخ داده است.`));
-    }
     return {
       id: "crash_loop",
       rank: 0,

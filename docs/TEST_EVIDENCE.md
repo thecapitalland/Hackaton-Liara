@@ -1,4 +1,26 @@
-# Verification evidence · 2026-10-22
+# Verification evidence · cumulative through 2026-10-23
+
+## Latest full verification — 2026-10-23
+
+This section supersedes earlier test counts and the legacy `BUG_MODE=off` policy exception. Earlier sections remain as historical records of the checks performed at that time.
+
+| Check | Result | Evidence / limits |
+|---|---|---|
+| `npm run typecheck` | PASS | `tsc -p tsconfig.json --noEmit` |
+| `npm test` | PASS | **87/87**, 0 failed (~2.3s); includes env-history, incident-window, remedy-selection, rollback-plan, watch, server, and approval tests |
+| `npm run build` | PASS | `dist` refreshed |
+| `npm run smoke -- --offline` | PASS | Real stdio handshake, discovers **33 tools**, ping |
+| `npm run smoke` | PASS | Live read-only `liara_list_apps` + HTTPS probe; no provider mutation |
+| `node dist/index.js --help` | PASS | Connection command/args/cwd, required variables, low-risk action summary |
+| Startup stderr message | PASS | Verified from a real child process: version, allowed app, token configured/not configured, policy, watch app/interval, and `cwd`/state/package paths |
+| `npm run secret-scan` | PASS | 76 commit-eligible files; configured secrets/private-key markers absent (not a universal detector) |
+| `git diff --check` | PASS | Exit 0; only Windows line-ending notices |
+| Generic `rollback_last_env_change` | PASS (unit) | Latest journal/audit/release candidate, 10-minute window, exact before/after rollback, mismatch protection, rollback-loop suppression |
+| LLM remedy list/selection | PASS (unit) | Prompt contains `restart` plus `rollback_last_env_change` only when an exact revertable change exists; invalid selections are ignored |
+| Same-cycle probe samples | PASS (unit) | watch aggregates 3 routes × 3 samples = 9; diagnosis receives the same samples and reports `3/9`, not `2/3` |
+| Incident-window anchoring | PASS (unit) | Logs/events/crash-loop evidence anchored to `incidentAt`; older events dropped |
+| Live env rollback / live watcher remediation | NOT_RUN | `APPROVAL_POLICY=strict`, no live incident/remediation was triggered; no env mutation was performed for these checks |
+| Actual IDE connection | NOT_RUN | Standalone stdio smoke passes; per-IDE connection remains untested |
 
 ## Successful app create (live, 15:38 UTC)
 - Owner approved the exact displayed body: `{name:"agate-liara",planID:"small-g2",bundlePlanID:"basic",platform:"node",network:"6ada1e64b3b5ca83e1ee0ce1"}`, quote hash `5babbdf1…255eee8`, 750000 Tomans/month.
@@ -34,7 +56,7 @@ Environment: Windows, Node v26.2.0, npm 12.0.2, TypeScript 5.9.x; repository `th
 | `npm run build` | PASS | tsc exit 0 after registration wrapper type fix |
 | `npm test` | PASS | 31 tests, 31 passed, 0 failed; ~1.84s. Fixtures/mocked API + in-memory MCP, not live provider tests |
 | `node demo-site/test.mjs` | PASS | 7 tests, 7 passed; health, healthy home, slow latency, real TypeError/500, leak external-memory growth, admin auth |
-| `npm run smoke -- --offline` | PASS | Real child-process stdio initialization, list 31 tools, ping; live deliberately skipped |
+| `npm run smoke -- --offline` | PASS (historical) | Real child-process stdio initialization; 31 tools at the time (current: 33), ping; live deliberately skipped |
 | `npm run smoke` with configured token | FAIL | stdio passed, live app-list failed before successful authentication |
 | `npm run preflight` (repeat at user request) | BLOCKED | 0/4: projects, me, domains, DNS zones. No usable HTTP response; `.agate/preflight-1792674179275.json` |
 | DNS diagnosis without credentials | FAIL | Node: EAI_AGAIN for api.iran.liara.ir / api.liara.ir / DNS service; PowerShell: remote name could not be resolved; Code Mode fetch: ENOTFOUND |
@@ -52,7 +74,7 @@ Safety coverage: denial sends zero fetch calls; deploy_project on an existing ap
 
 Failure history: original demo leak test used heapUsed for Buffers and failed; fixed to inspect external memory as well. A packager test wrongly rejected `.gitignore` and was corrected to reject `.git/`. Initial build wrapper type error fixed and build rerun. These local failures are not hidden as live success.
 
-**Overall: PARTIAL.** Local functional checks pass; live integration acceptance is blocked by name resolution. See LIMITATIONS.md for unimplemented DNS mutation and other gaps. Do not record a successful live demo until preflight, approvals and post-action checks succeed.
+**Overall at the time of this early section: PARTIAL.** That blocker was resolved later (see the live deployment/release sections and the latest section at the top). Current status: local checks pass; live read-only checks pass; live env rollback/remediation and actual IDE connections remain NOT_RUN. See LIMITATIONS.md for unimplemented DNS mutation and other gaps.
 
 ## 2026-10-22 — build guard and approval-expiry hardening
 | Check | Result | Evidence |
@@ -83,13 +105,13 @@ The earlier `timeout` was client-side: `releaseState()` did not unwrap `data.rel
 | Check | Result | Evidence |
 |---|---|---|
 | `npm run typecheck` | PASS | `tsc --noEmit` |
-| `npm test` | PASS | **55/55**; includes strict/balanced/auto matrix, `BUG_MODE=off`, high-risk override, and audit `auto:balanced` |
+| `npm test` | PASS (historical) | **55/55** at the time; final run is **87/87** in the latest section |
 | `APPROVAL_POLICY` default | PASS | absent/invalid → `strict`; `.env.example` documents all three values |
-| `balanced` low-risk path | PASS (unit) | `restart` and `BUG_MODE=off` → automatic with «اجرای خودکار طبق سیاست balanced» |
+| `balanced` low-risk path | SUPERSEDED | The legacy `BUG_MODE=off` special case was removed on 2026-10-23. Current balanced behavior auto-runs `restart` and only an exact, revertable `rollback_last_env_change`; `liara_set_env` remains medium. |
 | High-risk override | PASS (unit) | create app/network, resize, scale remain `high` and require approval in every policy |
 | Audit trail | PASS (unit) | `.agate/audit.jsonl` entry records `approval:"auto:balanced"` and the policy notice |
 
-No live provider write was performed for these policy tests. The leak scenario's `BUG_MODE=off` was separately approved by the owner and is verified by `/health` (`bugMode:"off"`, `extMB` stable at 3.5MB).
+No live provider write was performed for these policy tests. The separate historical leak demo used a one-off approved `BUG_MODE=off`; that is not the current balanced policy.
 
 ## 2026-10-22 — diagnosis honesty / blind-input guard
 
@@ -98,10 +120,10 @@ No live provider write was performed for these policy tests. The leak scenario's
 | `npm run typecheck` | PASS | `tsc -p tsconfig.json --noEmit` |
 | `npm test` | PASS | **59/59**; adds four honesty/guard checks in `test/diagnosis-honesty.test.ts` |
 | Prompt leakage test | PASS | `buildLlmPrompt` output contains no `BUG_MODE`, `bugMode`, or injected mode value (`error500`) |
-| Env input | NOT USED | `gatherDiagnosis` passes `env:null`; no env values or key names are sent to detectors or the LLM |
+| Env values/keys | NOT USED | `gatherDiagnosis` passes `env:null`; no project env values or project env key list is read from the API. Only audit/release metadata for the existence/time of an env change is used locally to choose a remedy; neither values nor keys are sent to detectors or the LLM. |
 | `/health` body | NOT USED | `diagnose` probes `/` and uses status/latency only; `httpProbe` reads and discards the body without parsing |
-| Live read-only diagnosis | PASS | `inc_e7699495` returned `diagnosisInputExcludes:["env","BUG_MODE","health.body"]`; evidence sources were metrics/events/probe, no env. This healthy run had no hypotheses, so rules/`inconclusive` was returned and LLM was intentionally not called. |
-| Exact prompt inspection | PASS | `.agate/show-prompt.ts` printed system/user prompt; only app, symptom, legal candidate causes, evidence, and `JSON خروجی:` are present |
+| Live read-only diagnosis | PASS (historical) | `inc_e7699495` returned `diagnosisInputExcludes:["env","BUG_MODE","health.body"]`; evidence sources were metrics/events/probe, no env values. This healthy run had no hypotheses, so rules/`inconclusive` was returned and LLM was intentionally not called. |
+| Exact prompt inspection | PASS (historical) | `.agate/show-prompt.ts` printed system/user prompt; only app, symptom, legal candidate causes, evidence, allowed remedy ids, and `JSON خروجی:` are present. The current prompt includes the two allowed remedy ids only when applicable. |
 
 This is a local/unit verification plus one read-only live diagnosis. No live provider mutation was made for the honesty tests. The blind test itself waits for a separately injected mode and is not claimed as passed.
 
@@ -110,16 +132,18 @@ This is a local/unit verification plus one read-only live diagnosis. No live pro
 | Check | Result | Evidence |
 |---|---|---|
 | `npm run typecheck` | PASS | `tsc -p tsconfig.json --noEmit` |
-| `npm test` | PASS | **68/68**; adds `test/watch.test.ts` and server tool-list/annotation checks |
+| `npm test` | PASS (final) | **87/87**; final run includes `test/watch.test.ts`, env-history, incident-window, remedy-selection, and rollback-plan checks |
 | `npm run build` | PASS | `dist` refreshed |
-| `npm run secret-scan` | PASS | 71 commit-eligible files; configured secrets/private-key markers absent (not a universal detector) |
-| `npm run smoke -- --offline` | PASS | Real stdio handshake, discovers 32 tools, ping; live deliberately skipped |
+| `npm run secret-scan` | PASS | 76 commit-eligible files in the final run; configured secrets/private-key markers absent (not a universal detector) |
+| `npm run smoke -- --offline` | PASS | Real stdio handshake, discovers **33 tools**, ping; live deliberately skipped |
 | Watch thresholds | PASS (unit) | 500 rate strictly >5%, p50 strictly >1500ms, new OOM/restart/crash; exact thresholds do not trigger |
 | Metrics summary | PASS (unit + live) | Official `cpuUsage`/`memoryUsage` array shape parsed; raw units are not guessed |
 | Cooldown | PASS (unit) | Same fingerprint suppressed within cooldown; a different incident is still reported; first run seeds the event watermark |
 | Audit mapping | PASS (unit) | `watch_incident` records `pending`, `approved`, `auto:balanced`, or `not-required` |
-| Approval policy | PASS (unit) | `strict` requires approval; `balanced` treats `BUG_MODE=off` as low-risk automatic |
+| Approval policy | PASS (unit) | `strict` requires approval; `balanced` auto-runs `restart` and exact `rollback_last_env_change`; the legacy `BUG_MODE=off` exception was removed |
 | Live `npm run watch -- --once` | PASS (read-only) | All three routes HTTP 200, 0/9 500s, max p50 1163ms, metrics summary present, no new incident |
 | Live remediation | NOT_RUN | `APPROVAL_POLICY=strict`; the healthy live run had no trigger and performed zero provider mutations |
 
 During live validation, a release-lifecycle `destroy` event was initially classified as a restart and produced one incident with no diagnosis hypothesis. The classifier was narrowed to explicit OOM/restart/crash signals; bare `kill`/`destroy`/`stop`/`die` are now ignored because Liara emits them during ordinary release turnover. A regression test covers this. The erroneous incident remains in the local append-only audit log as a truthful record; no audit entry was deleted.
+
+The 2026-10-23 generalization replaces the old demo-specific `BUG_MODE=off` remedy with `rollback_last_env_change`. The watcher now receives the same 9 probe samples and the same cycle's events that produced the trigger, searches a 10-minute incident window, and offers the LLM only `restart` plus an exact revertable rollback when the local journal has before/after values. If the journal is missing, the change is newer than the incident, or current env no longer matches the recorded `after`, the rollback is refused and `restart` is used/suggested. Live mutation of env was not exercised; the live watcher run above was healthy and read-only.

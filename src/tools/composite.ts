@@ -14,7 +14,17 @@ import { liaraGet, liaraPost, uploadSource, LiaraError } from "../liara/client.j
 import { EP } from "../liara/endpoints.js";
 import { unwrapRelease } from "../liara/release.js";
 import { detectCauses, parseEvents, parseLogs, parseSeries } from "../diagnose/detectors.js";
-import { rankWithLlm } from "../diagnose/llm.js";
+import { rankWithLlm, RESTART_REMEDY, ROLLBACK_ENV_REMEDY, type LlmRankResult, type RemedyOption } from "../diagnose/llm.js";
+import {
+  DEFAULT_EVIDENCE_WINDOW_MINUTES,
+  filterEventsToWindow,
+  filterLogsToWindow,
+} from "../diagnose/window.js";
+import {
+  ENV_CHANGE_WINDOW_SEC,
+  findLatestEnvChange,
+  type EnvChangeCandidate,
+} from "../env-history.js";
 import { detectStack, type StackDetection } from "../deploy/detect.js";
 import { humanSize, packageSource } from "../deploy/package.js";
 import { httpProbe, probeSummary, sleep } from "../probe.js";
@@ -24,11 +34,14 @@ import { extractDnsRecords, runGuardedAction } from "./write.js";
 import { parsePlans } from "./read.js";
 import { fetchPlanCatalog, pairLabel } from '../liara/plans.js';
 import type {
+  EventItem,
   Evidence,
   Hypothesis,
   IncidentReport,
   LogLine,
   PlanLimits,
+  ProbeResult,
+  RemedyKind,
   Series,
 } from "../types.js";
 import { randomUUID } from "node:crypto";
@@ -285,6 +298,8 @@ interface Baseline {
   incidentId: string;
   app: string;
   observedAt: string;
+  /** زمان شروع رخداد؛ برای rollback دقیق‌تر از observedAt. */
+  incidentAt?: string;
   planID?: string;
   probe: { url: string; p50: number | null; statuses: (number | null)[]; ok: boolean };
   cpu: { min: number; max: number; avg: number; last: number } | null;
@@ -293,16 +308,15 @@ interface Baseline {
   errorsSeen: number;
 }
 
-function baselinePath(app: string): string {
+function baselinePath(app: string, stateDir = config.stateDir): string {
   if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(app)) throw new Error('نام اپ نامعتبر است.');
-  const dir = config.stateDir;
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  return path.join(dir, `baseline-${app}.json`);
+  if (!existsSync(stateDir)) mkdirSync(stateDir, { recursive: true });
+  return path.join(stateDir, `baseline-${app}.json`);
 }
 
-function saveBaseline(app: string, baseline: Baseline): void {
-  mkdirSync(config.stateDir, { recursive: true });
-  writeFileSync(baselinePath(app), JSON.stringify(baseline, null, 2), "utf8");
+function saveBaseline(app: string, baseline: Baseline, stateDir = config.stateDir): void {
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(baselinePath(app, stateDir), JSON.stringify(baseline, null, 2), "utf8");
 }
 
 function loadBaseline(app: string): Baseline | null {
@@ -345,11 +359,13 @@ interface DiagnosisBundle {
   incidentId: string;
   app: string;
   observedAt: string;
+  /** لنگر پنجرهٔ شواهد: incidentAt معتبر یا observedAt. */
+  windowAnchor: string;
   logs: LogLine[];
-  events: ReturnType<typeof parseEvents>;
+  events: EventItem[];
   cpu: Series | null;
   memory: Series | null;
-  probe: Awaited<ReturnType<typeof httpProbe>>;
+  probe: ProbeResult | { error: string };
   env: { defined: string[]; required: string[] } | null;
   plan: PlanLimits | null;
   evidence: Evidence[];
@@ -357,71 +373,166 @@ interface DiagnosisBundle {
   notes: string[];
   llmUsed: boolean;
   llmNote?: string;
+  selectedRemedy: RemedyKind;
+  remedySource: "llm" | "rules";
+  rollbackAvailable: boolean;
+  envChangeAt?: string;
+  envChangeSource?: string;
 }
 
-async function gatherDiagnosis(app: string, symptom?: string): Promise<DiagnosisBundle> {
+export interface DiagnosisOptions {
+  /** زمان شروع رخداد؛ لنگر پنجرهٔ شواهد و جست‌وجوی تغییر env. پیش‌فرض زمان مشاهده. */
+  incidentAt?: string;
+  /** پروب همان چرخهٔ پایش؛ در نبود آن، diagnose خودش پروب می‌کند. */
+  probe?: ProbeResult;
+  /** رویدادهای همان چرخه؛ در نبود آن، diagnose خودش می‌خواند. */
+  events?: EventItem[];
+  logs?: LogLine[];
+  cpu?: Series | null;
+  memory?: Series | null;
+  plan?: PlanLimits | null;
+  /** بازهٔ شواهد؛ پیش‌فرض ۱۰ دقیقه. */
+  eventWindowMinutes?: number;
+  /** بازهٔ جست‌وجوی تغییر env؛ پیش‌فرض ۱۰ دقیقه. */
+  envChangeWindowSec?: number;
+  /** برای تست deterministic یا تزریق نتیجهٔ جست‌وجوی env. */
+  envChange?: EnvChangeCandidate | null;
+  /** در production پیش‌فرض true است. */
+  includeReleaseEnvEvents?: boolean;
+  /** برای تست؛ مسیر ذخیرهٔ baseline. */
+  stateDir?: string;
+  /** اگر false، LLM حتی با پیکربندی کامل فراخوانی نمی‌شود (تست/آفلاین). */
+  llm?: boolean;
+}
+
+async function gatherDiagnosis(
+  app: string,
+  symptom: string | undefined,
+  options: DiagnosisOptions = {},
+): Promise<DiagnosisBundle> {
   const notes: string[] = [];
   const observedAt = new Date().toISOString();
+  const windowMinutes = options.eventWindowMinutes ?? DEFAULT_EVIDENCE_WINDOW_MINUTES;
+  const incidentMs = options.incidentAt ? Date.parse(options.incidentAt) : Number.NaN;
+  const windowAnchor = Number.isFinite(incidentMs) ? options.incidentAt! : observedAt;
+  const anchorMs = Number.isFinite(incidentMs) ? incidentMs : Date.parse(observedAt);
 
-  /* لاگ‌ها */
+  /* لاگ‌ها: درخواست از قبل به بازهٔ رخداد محدود می‌شود. */
   let logs: LogLine[] = [];
-  try {
-    const res = await liaraGet<unknown>(EP.logsV2(app), {
-      query: {
-        start: new Date(Date.now() - 15 * 60_000).toISOString(),
-        direction: "forward",
-        last_lines: 300,
-      },
-    });
-    logs = parseLogs(res.data);
-  } catch {
+  if (options.logs !== undefined) {
+    logs = options.logs;
+  } else {
     try {
-      const res = await liaraGet<unknown>(EP.logsV1(app), {
-        query: { since: Date.now() - 15 * 60_000 },
+      const res = await liaraGet<unknown>(EP.logsV2(app), {
+        query: {
+          start: new Date(anchorMs - windowMinutes * 60_000).toISOString(),
+          direction: "forward",
+          last_lines: 300,
+        },
       });
       logs = parseLogs(res.data);
-    } catch (err) {
-      notes.push("دریافت لاگ‌ها ناموفق بود؛ تحلیل بر پایهٔ شواهد ناقص است.");
+    } catch {
+      try {
+        const res = await liaraGet<unknown>(EP.logsV1(app), {
+          query: { since: anchorMs - windowMinutes * 60_000 },
+        });
+        logs = parseLogs(res.data);
+      } catch {
+        notes.push("دریافت لاگ‌ها ناموفق بود؛ تحلیل بر پایهٔ شواهد ناقص است.");
+      }
+    }
+  }
+  const logWindow = filterLogsToWindow(logs, windowAnchor, windowMinutes);
+  logs = logWindow.items;
+  if (logWindow.dropped) {
+    notes.push(`${logWindow.dropped} خط لاگ قدیمی‌تر از ${windowMinutes} دقیقه کنار گذاشته شد.`);
+  }
+
+  /* رویدادها: فقط همان بازهٔ رخداد؛ قدیمی‌ترها discard می‌شوند. */
+  let rawEvents: EventItem[] = [];
+  if (options.events !== undefined) {
+    rawEvents = options.events;
+  } else {
+    try {
+      const res = await liaraGet<unknown>(EP.events(app));
+      rawEvents = parseEvents(res.data);
+    } catch {
+      notes.push("دریافت رویدادها ناموفق بود.");
+    }
+  }
+  const eventWindow = filterEventsToWindow(rawEvents, windowAnchor, windowMinutes);
+  const events = eventWindow.items;
+  if (eventWindow.dropped) {
+    notes.push(
+      `${eventWindow.dropped} رویداد قدیمی‌تر از ${windowMinutes} دقیقه یا بدون زمان معتبر کنار گذاشته شد.`,
+    );
+  }
+
+  /* متریک‌ها: بازهٔ ۳۰ دقیقه برای روند، ولی تحلیل رویداد محدود به پنجره است. */
+  let cpu: Series | null = options.cpu !== undefined ? options.cpu : null;
+  let memory: Series | null = options.memory !== undefined ? options.memory : null;
+  if (options.cpu === undefined || options.memory === undefined) {
+    const [cpuRes, memRes] = await Promise.allSettled([
+      liaraGet<unknown>(EP.metricsCpu(app), { query: { since: anchorMs - 30 * 60_000 } }),
+      liaraGet<unknown>(EP.metricsMemory(app), { query: { since: anchorMs - 30 * 60_000 } }),
+    ]);
+    if (options.cpu === undefined) {
+      if (cpuRes.status === "fulfilled") cpu = parseSeries(cpuRes.value.data, "cpu", "%");
+      else notes.push("متریک CPU در دسترس نبود.");
+    }
+    if (options.memory === undefined) {
+      if (memRes.status === "fulfilled") memory = parseSeries(memRes.value.data, "memory", "MB");
+      else notes.push("متریک حافظه در دسترس نبود.");
     }
   }
 
-  /* رویدادها */
-  let events = parseEvents([]);
-  try {
-    const res = await liaraGet<unknown>(EP.events(app));
-    events = parseEvents(res.data);
-  } catch {
-    notes.push("دریافت رویدادها ناموفق بود.");
+  /* پروب: اگر watch همان چرخه را داده باشد، دوباره پروب نمی‌کنیم. */
+  let probe: ProbeResult | { error: string };
+  if (options.probe !== undefined) {
+    probe = options.probe;
+  } else {
+    probe = await httpProbe(app, { path: "/", count: 3 });
+    if ("error" in probe) notes.push(probe.error);
   }
-
-  /* متریک‌ها */
-  let cpu: Series | null = null;
-  let memory: Series | null = null;
-  const [cpuRes, memRes] = await Promise.allSettled([
-    liaraGet<unknown>(EP.metricsCpu(app), { query: { since: Date.now() - 30 * 60_000 } }),
-    liaraGet<unknown>(EP.metricsMemory(app), { query: { since: Date.now() - 30 * 60_000 } }),
-  ]);
-  if (cpuRes.status === "fulfilled") cpu = parseSeries(cpuRes.value.data, "cpu", "%");
-  else notes.push("متریک CPU در دسترس نبود.");
-  if (memRes.status === "fulfilled") memory = parseSeries(memRes.value.data, "memory", "MB");
-  else notes.push("متریک حافظه در دسترس نبود.");
-
-  /* پروب */
-  const probe = await httpProbe(app, { path: "/", count: 3 });
-  if ("error" in probe) notes.push(probe.error);
 
   /*
    * env عمداً خوانده نمی‌شود: نه مقدار BUG_MODE و نه فهرست کلیدها.
-   * فقط plan برای آستانهٔ CPU از متادیتای اپ گرفته می‌شود.
+   * فقط plan برای آستانهٔ CPU از متادیتای اپ گرفته می‌شود. برای انتخاب
+   * rollback فقط «وجود/زمان تغییر» از تاریخچه بررسی می‌شود، نه مقدارها.
    */
-  let plan: PlanLimits | null = null;
-  try {
-    const res = await liaraGet<Record<string, unknown>>(EP.getProject(app));
-    const obj = (res.data?.project ?? res.data ?? {}) as Record<string, unknown>;
-    const currentPlanID = String(obj["plan"] ?? obj["planID"] ?? "");
-    plan = currentPlanID ? planFromProject(obj, currentPlanID) : null;
-  } catch {
-    notes.push("اطلاعات پلن اپ در دسترس نبود.");
+  let plan: PlanLimits | null = options.plan !== undefined ? options.plan : null;
+  if (options.plan === undefined) {
+    try {
+      const res = await liaraGet<Record<string, unknown>>(EP.getProject(app));
+      const obj = (res.data?.project ?? res.data ?? {}) as Record<string, unknown>;
+      const currentPlanID = String(obj["plan"] ?? obj["planID"] ?? "");
+      plan = currentPlanID ? planFromProject(obj, currentPlanID) : null;
+    } catch {
+      notes.push("اطلاعات پلن اپ در دسترس نبود.");
+    }
+  }
+
+  const incidentAt = options.incidentAt ?? observedAt;
+  let envChange: EnvChangeCandidate | null = null;
+  if (options.envChange !== undefined) {
+    envChange = options.envChange;
+  } else {
+    try {
+      envChange = await findLatestEnvChange(app, incidentAt, {
+        windowSec: options.envChangeWindowSec ?? ENV_CHANGE_WINDOW_SEC,
+        includeReleases: options.includeReleaseEnvEvents !== false,
+        ...(options.stateDir ? { stateDir: options.stateDir } : {}),
+      });
+    } catch {
+      notes.push("تاریخچهٔ تغییرات env در دسترس نبود؛ rollback خودکار پیشنهاد نمی‌شود.");
+    }
+  }
+  const rollbackAvailable =
+    envChange?.revertable === true && envChange.changes.length > 0;
+  if (envChange && !rollbackAvailable) {
+    notes.push(
+      "تغییر env اخیری دیده شد، اما مقدار قبلی آن در تاریخچهٔ محلی ثبت نشده؛ rollback دقیق ممکن نیست.",
+    );
   }
 
   const detectionResult = detectCauses({
@@ -433,22 +544,49 @@ async function gatherDiagnosis(app: string, symptom?: string): Promise<Diagnosis
     probe: "error" in probe ? null : probe,
     env: null,
     plan,
-    collectedAt: observedAt,
+    collectedAt: windowAnchor,
+    windowMinutes,
   });
 
-  /* LLM فقط رتبه‌بندی می‌کند */
-  const llm = await rankWithLlm({
-    app,
-    symptom,
-    hypotheses: detectionResult.hypotheses,
-    evidence: detectionResult.evidence,
-  });
+  /* راهکار rollback فقط وقتی در فهرست LLM می‌آید که واقعاً قابل اجرا باشد. */
+  if (rollbackAvailable) {
+    const rollbackText = "برگرداندن آخرین تغییر env قبل از رخداد (فقط همان کلیدها).";
+    for (const hypothesis of detectionResult.hypotheses) {
+      if (!hypothesis.remedies.includes("rollback_last_env_change")) {
+        hypothesis.remedies = ["rollback_last_env_change", ...hypothesis.remedies];
+        hypothesis.remedyText = [rollbackText, ...hypothesis.remedyText];
+      }
+    }
+  }
+
+  const remedies: RemedyOption[] = [];
+  if (rollbackAvailable) remedies.push(ROLLBACK_ENV_REMEDY);
+  remedies.push(RESTART_REMEDY);
+
+  const llm: LlmRankResult =
+    options.llm === false
+      ? {
+          hypotheses: detectionResult.hypotheses,
+          usedLlm: false,
+          note: "LLM برای این اجرا غیرفعال شد؛ تحلیل کاملاً بر پایهٔ قواعد.",
+        }
+      : await rankWithLlm({
+          app,
+          symptom,
+          hypotheses: detectionResult.hypotheses,
+          evidence: detectionResult.evidence,
+          remedies,
+        });
   if (llm.note) notes.push(llm.note);
+
+  const selectedRemedy: RemedyKind = llm.selectedRemedy ?? (rollbackAvailable ? "rollback_last_env_change" : "restart");
+  const remedySource: "llm" | "rules" = llm.selectedRemedy ? "llm" : "rules";
 
   return {
     incidentId: `inc_${randomUUID().slice(0, 8)}`,
     app,
     observedAt,
+    windowAnchor,
     logs,
     events,
     cpu,
@@ -461,6 +599,10 @@ async function gatherDiagnosis(app: string, symptom?: string): Promise<Diagnosis
     notes,
     llmUsed: llm.usedLlm,
     llmNote: llm.note,
+    selectedRemedy,
+    remedySource,
+    rollbackAvailable,
+    ...(envChange ? { envChangeAt: envChange.at, envChangeSource: envChange.source } : {}),
   };
 }
 
@@ -484,6 +626,24 @@ function planFromProject(obj: Record<string, unknown>, planID: string): PlanLimi
 }
 
 /** قالب‌بندی گزارش رخداد (۳ سطر رتبه‌بندی + شواهد + گام بعدی) */
+export function remedyLabel(kind: RemedyKind): string {
+  switch (kind) {
+    case "rollback_last_env_change":
+      return "برگرداندن آخرین تغییر env قبل از رخداد (کم‌خطر)";
+    case "restart":
+      return "ری‌استارت سرویس (کم‌خطر)";
+    case "resize":
+      return "تغییر پلن";
+    case "set_env":
+      return "تنظیم متغیر محیطی";
+    case "scale":
+      return "روشن/خاموش‌کردن سرویس";
+    case "code_fix":
+    default:
+      return "اصلاح کد";
+  }
+}
+
 export function formatIncident(report: IncidentReport, extraNotes: string[] = []): string {
   const lines: string[] = [];
   lines.push(`${fa.diagnoseHeader(report.appId)}`);
@@ -505,6 +665,15 @@ export function formatIncident(report: IncidentReport, extraNotes: string[] = []
       lines.push(`• ${h.rank}) ${h.cause}`);
       for (const t of h.remedyText) lines.push(`   ↳ ${t}`);
     }
+  }
+
+  if (report.selectedRemedy) {
+    lines.push(
+      "",
+      `🧭 اقدام پیشنهادی: ${remedyLabel(report.selectedRemedy)}${
+        report.remedySource === "llm" ? " (انتخاب LLM)" : " (قواعد)"
+      }`,
+    );
   }
 
   lines.push("");
@@ -602,6 +771,12 @@ export interface DiagnosisRun {
   analysisLine: string;
   llmUsed: boolean;
   llmNote?: string;
+  /** اقدام کم‌خطر پیشنهادی برای remediation */
+  selectedRemedy: RemedyKind;
+  remedySource: "llm" | "rules";
+  rollbackAvailable: boolean;
+  envChangeAt?: string;
+  envChangeSource?: string;
 }
 
 /**
@@ -609,8 +784,12 @@ export interface DiagnosisRun {
  * watch_app هم از همین مسیر استفاده می‌کند تا env و بدنهٔ /health هرگز وارد
  * ورودی تشخیص نشوند.
  */
-export async function runDiagnosis(app: string, symptom?: string): Promise<DiagnosisRun> {
-  const bundle = await gatherDiagnosis(app, symptom);
+export async function runDiagnosis(
+  app: string,
+  symptom?: string,
+  options: DiagnosisOptions = {},
+): Promise<DiagnosisRun> {
+  const bundle = await gatherDiagnosis(app, symptom, options);
   const report: IncidentReport = {
     incidentId: bundle.incidentId,
     provider: "liara",
@@ -619,6 +798,8 @@ export async function runDiagnosis(app: string, symptom?: string): Promise<Diagn
     status: bundle.hypotheses.length ? "diagnosed" : "inconclusive",
     evidence: bundle.evidence,
     hypotheses: bundle.hypotheses,
+    selectedRemedy: bundle.selectedRemedy,
+    remedySource: bundle.remedySource,
     verification: null,
     limitations: [
       "لاگ لیارا استریم نمی‌شود؛ خواندن لاگ بر پایهٔ polling انجام می‌شود.",
@@ -633,6 +814,7 @@ export async function runDiagnosis(app: string, symptom?: string): Promise<Diagn
     incidentId: bundle.incidentId,
     app,
     observedAt: bundle.observedAt,
+    incidentAt: bundle.windowAnchor,
     planID: bundle.plan?.planID,
     probe: {
       url: probeOk?.url ?? "",
@@ -644,15 +826,27 @@ export async function runDiagnosis(app: string, symptom?: string): Promise<Diagn
     memory: bundle.memory ? seriesStats(bundle.memory) : null,
     errorPattern: errPattern?.pattern,
     errorsSeen: errPattern?.count ?? 0,
-  });
+  }, options.stateDir);
 
   const analysisLine = bundle.llmUsed
-    ? `🧠 منبع تحلیل: LLM (${config.llmModel}) — علت‌ها از detectorهای قانونی، رتبه‌بندی با LLM`
+    ? `🧠 منبع تحلیل: LLM (${config.llmModel}) — علت‌ها از detectorهای قانونی، رتبه‌بندی و انتخاب راهکار با LLM`
     : `🧠 منبع تحلیل: fallback قانون‌محور${bundle.llmNote ? ` — ${bundle.llmNote}` : ""}`;
   const inputLine =
-    "🧾 ورودی تشخیص: لاگ، متریک، رویدادها و پروب HTTP؛ env و بدنهٔ /health استفاده نمی‌شوند.";
+    `🧾 ورودی تشخیص: لاگ/رویدادهای ${options.eventWindowMinutes ?? DEFAULT_EVIDENCE_WINDOW_MINUTES} دقیقهٔ پیرامون رخداد، متریک، و پروب HTTP؛ ` +
+    "مقدار env و بدنهٔ /health استفاده نمی‌شوند (فقط متادیتای وجود تغییر env برای انتخاب اقدام بررسی می‌شود).";
   const text = `${analysisLine}\n${inputLine}\n${formatIncident(report, bundle.notes)}`;
-  return { report, text, analysisLine, llmUsed: bundle.llmUsed, llmNote: bundle.llmNote };
+  return {
+    report,
+    text,
+    analysisLine,
+    llmUsed: bundle.llmUsed,
+    llmNote: bundle.llmNote,
+    selectedRemedy: bundle.selectedRemedy,
+    remedySource: bundle.remedySource,
+    rollbackAvailable: bundle.rollbackAvailable,
+    ...(bundle.envChangeAt ? { envChangeAt: bundle.envChangeAt } : {}),
+    ...(bundle.envChangeSource ? { envChangeSource: bundle.envChangeSource } : {}),
+  };
 }
 
 /* ─────────────────────────── ثبت ابزارها ─────────────────────────── */
@@ -708,7 +902,7 @@ export function registerCompositeTools(server: McpServer): void {
     {
       title: "تشخیص علت رخداد با شواهد",
       description:
-        "جمع‌آوری لاگ (۱۵ دقیقه)، متریک (۳۰ دقیقه)، رویدادها و ۳ پروب سلامت؛ سپس رتبه‌بندی ۳ علت محتمل با اطمینان و شناسهٔ شواهد + راهکارها. خروجی ساخت‌یافته = گزارش رخداد.",
+        "جمع‌آوری لاگ و رویدادهای ۱۰ دقیقهٔ اخیر، متریک (۳۰ دقیقه) و ۳ پروب سلامت؛ سپس رتبه‌بندی ۳ علت محتمل با اطمینان و شناسهٔ شواهد + راهکارها و انتخاب یک اقدام کم‌خطر. خروجی ساخت‌یافته = گزارش رخداد.",
       inputSchema: {
         app: z.string().min(1).describe("نام اپ در لیارا"),
         symptom: z.string().optional().describe("علائم گزارش‌شده توسط کاربر (اختیاری)"),
@@ -724,7 +918,11 @@ export function registerCompositeTools(server: McpServer): void {
           llmUsed: run.llmUsed,
           llmNote: run.llmNote,
           llmModel: run.llmUsed ? config.llmModel : undefined,
-          diagnosisInputExcludes: ["env", "BUG_MODE", "health.body"],
+          selectedRemedy: run.selectedRemedy,
+          remedySource: run.remedySource,
+          rollbackAvailable: run.rollbackAvailable,
+          diagnosisInputExcludes: ["env.values", "BUG_MODE", "health.body"],
+          evidenceWindowMinutes: DEFAULT_EVIDENCE_WINDOW_MINUTES,
           ...run.report,
           incident: run.report,
         } as unknown as Record<string, unknown>);
@@ -740,12 +938,12 @@ export function registerCompositeTools(server: McpServer): void {
     {
       title: "اعمال راهکار",
       description:
-        "اعمال یکی از راهکارهای علت شناسایی‌شده: restart | resize | code_fix | set_env. عملیات نوشتنی نیازمند تأیید است؛ code_fix فقط دستورالعمل دقیق برای ایجنت می‌دهد.",
+        "اعمال یکی از راهکارهای علت شناسایی‌شده: restart | rollback_last_env_change | resize | code_fix | set_env. عملیات نوشتنی نیازمند تأیید است؛ code_fix فقط دستورالعمل دقیق برای ایجنت می‌دهد.",
       inputSchema: {
         app: z.string().min(1).describe("نام اپ در لیارا"),
         incidentId: z.string().min(1).describe("شناسهٔ رخداد از diagnose"),
         option: z
-          .enum(["restart", "resize", "code_fix", "set_env"])
+          .enum(["restart", "rollback_last_env_change", "resize", "code_fix", "set_env"])
           .describe("راهکار موردنظر"),
         planID: z.string().optional().describe("پلن جدید برای resize (اختیاری)"),
         variables: z
@@ -761,6 +959,17 @@ export function registerCompositeTools(server: McpServer): void {
         if (!baseline || baseline.incidentId !== incidentId) return result('❌ baseline متناظر رخداد پیدا نشد؛ diagnose را اجرا کنید.', { ok: false });
         if (option === "restart") {
           const out = await runGuardedAction("liara_restart", { app });
+          return result(
+            `${out.res.content?.[0]?.type === "text" ? out.res.content[0].text : ""}\n🆔 رخداد: ${incidentId}`,
+            { incidentId, ...(out.res.structuredContent ?? {}) },
+          );
+        }
+
+        if (option === "rollback_last_env_change") {
+          const out = await runGuardedAction("rollback_last_env_change", {
+            app,
+            incidentAt: baseline.incidentAt ?? baseline.observedAt,
+          });
           return result(
             `${out.res.content?.[0]?.type === "text" ? out.res.content[0].text : ""}\n🆔 رخداد: ${incidentId}`,
             { incidentId, ...(out.res.structuredContent ?? {}) },

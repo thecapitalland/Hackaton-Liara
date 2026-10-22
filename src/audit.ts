@@ -73,6 +73,24 @@ export function readAuditTail(n = 20): AuditEntry[] {
   return out;
 }
 
+/** خواندن همهٔ خطوط سالم لاگ ممیزی (برای کشف تاریخچهٔ تغییرات env). */
+export function readAuditEntries(): AuditEntry[] {
+  const file = auditPath();
+  if (!existsSync(file)) return [];
+  const lines = readFileSync(file, "utf8")
+    .split("\n")
+    .filter((l) => l.trim().length > 0);
+  const out: AuditEntry[] = [];
+  for (const line of lines) {
+    try {
+      out.push(JSON.parse(line) as AuditEntry);
+    } catch {
+      /* خط خراب را نادیده بگیر */
+    }
+  }
+  return out;
+}
+
 /** ماسک‌کردن عمیق مقادیر حساس پارامترها برای ثبت در ممیزی */
 export function maskParams(
   params: Record<string, unknown> | undefined,

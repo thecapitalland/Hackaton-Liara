@@ -7,7 +7,6 @@ import {
   ALWAYS_APPROVAL_KINDS,
   decideApproval,
   effectiveRisk,
-  isBugModeOff,
 } from "../src/approval.js";
 import { readAuditTail } from "../src/audit.js";
 import { audited, result } from "../src/tools/common.js";
@@ -59,38 +58,30 @@ test("balanced: low خودکار، medium تأیید، high تأیید", () => {
   assert.equal(high.requiresApproval, true);
 });
 
-test("balanced: BUG_MODE=off به‌عنوان اقدام کم‌خطر خودکار است", () => {
-  const params = { app, variables: [{ key: "BUG_MODE", value: "off" }], unset: [] };
-  assert.equal(isBugModeOff(params), true);
-  assert.equal(effectiveRisk("liara_set_env", params, "medium"), "low");
+test("rollback_last_env_change کم‌خطر و در balanced خودکار است؛ liara_set_env همچنان medium است", () => {
+  const rollbackParams = { app, incidentAt: "2026-10-23T12:00:00.000Z" };
+  assert.equal(effectiveRisk("rollback_last_env_change", rollbackParams, "low"), "low");
 
-  const d = decideApproval({
+  const rollback = decideApproval({
+    tool: "rollback_last_env_change",
+    params: rollbackParams,
+    declaredRisk: "low",
+    policy: "balanced",
+  });
+  assert.equal(rollback.risk, "low");
+  assert.equal(rollback.requiresApproval, false);
+  assert.equal(rollback.automatic, true);
+  assert.match(rollback.autoNoticeFa ?? "", /اجرای خودکار طبق سیاست balanced/);
+
+  const setEnv = decideApproval({
     tool: "liara_set_env",
-    params,
+    params: { app, variables: [{ key: "BUG_MODE", value: "off" }] },
     declaredRisk: "medium",
     policy: "balanced",
   });
-  assert.equal(d.automatic, true);
-  assert.equal(d.risk, "low");
-  assert.match(d.autoNoticeFa ?? "", /اجرای خودکار طبق سیاست balanced/);
-});
-
-test("BUG_MODE=off با تغییر env دیگر یا unset، کم‌خطر محسوب نمی‌شود", () => {
-  assert.equal(
-    isBugModeOff({
-      variables: [
-        { key: "BUG_MODE", value: "off" },
-        { key: "ADMIN_KEY", value: "x" },
-      ],
-    }),
-    false,
-  );
-  assert.equal(
-    isBugModeOff({ variables: [{ key: "BUG_MODE", value: "off" }], unset: ["OLD"] }),
-    false,
-  );
-  assert.equal(isBugModeOff({ variables: [{ key: "BUG_MODE", value: "leak" }] }), false);
-  assert.equal(isBugModeOff({ variables: [] }), false);
+  assert.equal(setEnv.risk, "medium");
+  assert.equal(setEnv.requiresApproval, true);
+  assert.equal(setEnv.automatic, false);
 });
 
 test("auto: low و medium خودکار، high تأیید", () => {
@@ -141,6 +132,7 @@ test("ریسک اعلام‌شدهٔ عملیات‌های هزینه‌دار h
     assert.equal(getAction(kind)?.risk, "high", kind);
   }
   assert.equal(getAction("liara_restart")?.risk, "low");
+  assert.equal(getAction("rollback_last_env_change")?.risk, "low");
   assert.equal(getAction("liara_set_env")?.risk, "medium");
 });
 

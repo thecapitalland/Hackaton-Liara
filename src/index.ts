@@ -8,7 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { setElicitor } from "./approval.js";
-import { config } from "./config.js";
+import { config, PACKAGE_ROOT } from "./config.js";
 import { fa } from './i18n/fa.js';
 import { audited, errorResult } from './tools/common.js';
 import { registerReadTools } from "./tools/read.js";
@@ -19,14 +19,23 @@ import { registerWatchTools } from "./tools/watch.js";
 export const SERVER_NAME = "agate-liara";
 export const SERVER_VERSION = "0.1.0";
 
+/** پیام راهنمای اتصال که کلاینت MCP بعد از initialize می‌بیند. */
+export const SERVER_INSTRUCTIONS = [
+  "Agate-Liara — دستیار DevOps/SRE برای لیارا (MCP stdio).",
+  "شروع: ping، سپس liara_status یا liara_list_apps.",
+  "عیب‌یابی: diagnose(app, symptom) → apply_fix(incidentId) → verify_fix.",
+  "پایش: watch_app(app, cycles, intervalSec) یا npm run watch؛ هر چرخه سه مسیر را سه بار پروب می‌کند و در صورت رخداد، diagnose را با همان ۹ نمونه و رویدادهای ۱۰ دقیقه اجرا می‌کند.",
+  "ایمنی: خواندن‌ها آزادند؛ هر نوشتن از APPROVAL_POLICY و runGuardedAction عبور می‌کند. توکن/کلید را در چت ننویسید.",
+  "راهکار کم‌خطر: rollback_last_env_change فقط وقتی پیشنهاد می‌شود که تغییر env دقیقی در ۱۰ دقیقهٔ قبل در تاریخچهٔ محلی ثبت شده باشد؛ در غیر این صورت restart.",
+  "مقدار env و بدنهٔ /health ورودی تشخیص نیستند؛ فقط وجود/زمان تغییر env برای انتخاب اقدام بررسی می‌شود.",
+].join("\n");
+
 /** ساخت سرور و ثبت ابزارها */
 export function createServer(): McpServer {
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
-      instructions:
-        "Agate-Liara: دستیار DevOps/SRE برای لیارا. ابزارهای فقط‌خواندنی مستقیم اجرا می‌شوند؛ " +
-        "عملیات نوشتنی نیازمند تأیید کاربر هستند. خروجی‌ها فارسی و کوتاه هستند.",
+      instructions: SERVER_INSTRUCTIONS,
     },
   );
 
@@ -96,9 +105,14 @@ export async function main(): Promise<void> {
 
   await server.connect(transport);
   process.stderr.write(
-    `[agate-liara] آماده — اپ‌های مجاز: ${config.allowedApps.join("، ")} | توکن: ${
-      config.token ? "تنظیم شده" : "تنظیم نشده"
-    }\n`,
+    [
+      `[agate-liara] ✅ آماده (v${SERVER_VERSION}، انتقال stdio)`,
+      `[agate-liara] اپ‌های مجاز: ${config.allowedApps.join("، ") || "—"}`,
+      `[agate-liara] توکن لیارا: ${config.token ? "تنظیم شده" : "تنظیم نشده (ابزارها پیام راهنما می‌دهند)"} | سیاست تأیید: ${config.approvalPolicy}`,
+      `[agate-liara] پایش: اپ «${config.watchApp || "—"}» هر ${config.watchIntervalSec} ثانیه`,
+      `[agate-liara] cwd=${process.cwd()} | state=${config.stateDir} | package=${PACKAGE_ROOT}`,
+      `[agate-liara] شروع: ping → liara_list_apps → diagnose یا watch_app`,
+    ].join("\n") + "\n",
   );
 
   const shutdown = async (): Promise<void> => {
@@ -129,8 +143,13 @@ if (isDirectRun) {
         "Agate-Liara — سرور MCP برای لیارا",
         "",
         "اجرا:  node dist/index.js        (یا npx tsx src/index.ts)",
+        "اتصال: command=node، args=[\"dist/index.js\"]، cwd=ریشهٔ همین مخزن؛ نمونه‌ها در examples/",
+        "state: ./.agate نسبت به cwd؛ .env از cwd سپس ریشهٔ پکیج خوانده می‌شود",
+        "شروع: ping → liara_list_apps → diagnose/watch_app",
         "متغیرها: LIARA_API_TOKEN (الزامی)، LIARA_TEAM_ID، LIARA_API_BASE، LIARA_DNS_BASE،",
-        "          AGATE_ALLOWED_APPS، LLM_BASE_URL، LLM_API_KEY، LLM_MODEL",
+        "          AGATE_ALLOWED_APPS، APPROVAL_POLICY، WATCH_APP، WATCH_INTERVAL_SEC،",
+        "          WATCH_COOLDOWN_SEC، WATCH_REMEDIATE، LLM_BASE_URL، LLM_API_KEY، LLM_MODEL",
+        "اقدام کم‌خطر: rollback_last_env_change (در نبود تغییر env قابل‌بازگشت → restart)",
       ].join("\n") + "\n",
     );
   } else {

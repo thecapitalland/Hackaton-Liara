@@ -102,32 +102,17 @@ export function hashParams(tool: string, app: string | undefined, params: Record
 
 /* ───────────────────────── سیاست تأیید ───────────────────────── */
 
-/** آیا پارامترهای این عملیات فقط `BUG_MODE=off` را تغییر می‌دهند؟ */
-export function isBugModeOff(params: Record<string, unknown>): boolean {
-  const vars = params["variables"];
-  const unset = params["unset"];
-  if (!Array.isArray(vars) || vars.length !== 1) return false;
-  if (Array.isArray(unset) && unset.length > 0) return false;
-  const v = vars[0];
-  if (!v || typeof v !== "object") return false;
-  const obj = v as Record<string, unknown>;
-  return (
-    String(obj["key"] ?? "").trim().toUpperCase() === "BUG_MODE" &&
-    String(obj["value"] ?? "").trim().toLowerCase() === "off"
-  );
-}
-
 /**
- * ریسک مؤثر یک اقدام. عملیات هزینه‌دار/پرخطر همیشه high هستند و
- * برگرداندن BUG_MODE به off به‌عنوان اقدام کم‌خطر و برگشت‌پذیر شناخته می‌شود.
+ * ریسک مؤثر یک اقدام. عملیات هزینه‌دار/پرخطر همیشه high هستند.
+ * rollback_last_env_change خودش risk=low اعلام می‌کند و به سیاست عادی
+ * low/medium/high سپرده می‌شود؛ هیچ استثنای مخفی برای BUG_MODE وجود ندارد.
  */
 export function effectiveRisk(
   tool: string,
-  params: Record<string, unknown>,
+  _params: Record<string, unknown>,
   declaredRisk: Risk,
 ): Risk {
   if (ALWAYS_APPROVAL_KINDS.includes(tool)) return "high";
-  if (tool === "liara_set_env" && isBugModeOff(params)) return "low";
   return declaredRisk;
 }
 
@@ -175,7 +160,7 @@ export function decideApproval(input: {
       requiresApproval: true,
       automatic: false,
       reasonFa:
-        "سیاست balanced: تغییر env غیر از BUG_MODE=off یا انتشار جدید نیازمند تأیید است.",
+        "سیاست balanced: اقدام medium/high یا تغییر env عمومی نیازمند تأیید است؛ rollback_last_env_change و restart کم‌خطرند.",
     };
   }
 

@@ -8,9 +8,10 @@
  *  - اقدام درمانی کم‌خطر را از مسیر تأیید موجود (`runGuardedAction`) می‌فرستد
  *  - رخداد را در audit.jsonl ثبت و تا پایان cooldown از هشدار تکراری جلوگیری می‌کند
  *
- * این ماژول هیچ ورودی محیطی را برای تشخیص نمی‌خواند. اقدام درمانی این دمو
- * برگرداندن `BUG_MODE=off` است؛ این اقدام بخشی از تشخیص نیست و فقط پس از
- * تشخیص و از مسیر APPROVAL_POLICY اجرا/پیشنهاد می‌شود.
+ * این ماژول هیچ مقدار env را برای تشخیص نمی‌خواند. اقدام درمانی کم‌خطر
+ * `rollback_last_env_change` است: آخرین تغییر env قبل از رخداد را برمی‌گرداند
+ * و اگر تغییر قابل‌بازگشتی نبود، `restart` را انتخاب می‌کند. اقدام بخشی از
+ * تشخیص نیست و فقط پس از تشخیص و از مسیر APPROVAL_POLICY اجرا/پیشنهاد می‌شود.
  */
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -20,8 +21,13 @@ import { liaraGet } from "./liara/client.js";
 import { EP } from "./liara/endpoints.js";
 import { httpProbe } from "./probe.js";
 import { parseEvents } from "./diagnose/detectors.js";
-import type { EventItem, ProbeResult } from "./types.js";
-import { runDiagnosis, type DiagnosisRun } from "./tools/composite.js";
+import { timestampMs, DEFAULT_EVIDENCE_WINDOW_MINUTES } from "./diagnose/window.js";
+import type { EventItem, ProbeResult, RemedyKind } from "./types.js";
+import {
+  runDiagnosis,
+  type DiagnosisOptions,
+  type DiagnosisRun,
+} from "./tools/composite.js";
 import { runGuardedAction, type GuardedOutcome } from "./tools/write.js";
 import { writeAudit, type AuditApproval, type AuditEntry } from "./audit.js";
 import { faTime, firstText } from "./tools/common.js";
@@ -76,13 +82,19 @@ export interface WatchCooldown {
 }
 
 export interface WatchRemediation {
-  kind: "liara_set_env";
+  kind: "rollback_last_env_change" | "liara_restart" | "unknown";
   executed: boolean;
   approvalId?: string;
   /** نتیجهٔ ممیزی: pending، approved، auto:balanced، … */
   approval: AuditApproval;
   auto: boolean;
   text: string;
+}
+
+export interface WatchRemediationContext {
+  incidentAt: string;
+  selectedRemedy: RemedyKind;
+  rollbackAvailable: boolean;
 }
 
 export interface WatchIncident {
@@ -120,8 +132,8 @@ export interface WatchDeps {
   probeRoute?: (app: string, path: string) => Promise<ProbeResult | { error: string }>;
   readMetrics?: (app: string) => Promise<WatchMetricsSummary>;
   readEvents?: (app: string) => Promise<EventItem[]>;
-  diagnose?: (app: string, symptom: string) => Promise<DiagnosisRun>;
-  remediate?: (app: string) => Promise<GuardedOutcome>;
+  diagnose?: (app: string, symptom: string, options?: DiagnosisOptions) => Promise<DiagnosisRun>;
+  remediate?: (app: string, context?: WatchRemediationContext) => Promise<GuardedOutcome>;
   audit?: (entry: AuditEntry) => void;
   now?: () => Date;
 }
@@ -266,6 +278,30 @@ export function computeWatchStats(routes: WatchRouteResult[]): Pick<
 }
 
 /**
+ * تبدیل نتیجهٔ همان چرخهٔ پایش به ProbeResult برای diagnose.
+ * تعداد نمونه‌ها و 500ها دقیقاً همان چیزی است که watch گزارش می‌کند (مثلاً 3/9)
+ * و p50 آمارهٔ بدترین مسیر است تا آستانهٔ کندی با trigger هم‌خوان باشد.
+ */
+export function watchProbeResult(app: string, snapshot: WatchSnapshot): ProbeResult {
+  const samples = snapshot.routes.flatMap((route) =>
+    route.statuses.map((status) => ({
+      status,
+      latencyMs: route.p50,
+    })),
+  );
+  const ok =
+    samples.length > 0 &&
+    samples.every((sample) => (sample.status ?? 0) >= 200 && (sample.status ?? 0) < 300);
+  return {
+    url: `https://${app}.liara.run/`,
+    samples,
+    ok,
+    p50: snapshot.maxP50,
+    ...(ok ? {} : { errorText: snapshot.limitations.join("؛ ") || undefined }),
+  };
+}
+
+/**
  * آیا این رویداد نشانهٔ OOM/ری‌استارت/کرش است؟
  *
  * عمداً `kill`، `die`، `stop` و `destroy` تنها و بدون نشانهٔ صریح، trigger
@@ -331,14 +367,8 @@ export function triggersFingerprint(triggers: WatchTrigger[]): string {
 }
 
 export function eventTimestampSec(event: EventItem): number | null {
-  const raw = event.ts?.trim();
-  if (!raw) return null;
-  const numeric = Number(raw);
-  if (Number.isFinite(numeric)) {
-    return Math.floor(numeric > 1e12 ? numeric / 1000 : numeric);
-  }
-  const parsed = Date.parse(raw);
-  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
+  const ms = timestampMs(event.ts);
+  return ms === null ? null : Math.floor(ms / 1000);
 }
 
 function newestEventSec(events: EventItem[]): number | null {
@@ -422,20 +452,50 @@ async function defaultReadEvents(app: string): Promise<EventItem[]> {
   return parseEvents(data);
 }
 
-async function defaultDiagnose(app: string, symptom: string): Promise<DiagnosisRun> {
-  return runDiagnosis(app, symptom);
+async function defaultDiagnose(
+  app: string,
+  symptom: string,
+  options?: DiagnosisOptions,
+): Promise<DiagnosisRun> {
+  return runDiagnosis(app, symptom, options);
 }
 
 /**
- * اقدام درمانی کم‌خطر این دمو: برگرداندن BUG_MODE به off.
- * این مقدار فقط پس از تشخیص استفاده می‌شود و از همان موتور تأیید عبور می‌کند؛
- * در strict کادر تأیید، در balanced اجرای خودکار low و در auto خودکار است.
+ * اقدام درمانی کم‌خطر:
+ *  - اگر LLM/قاعده rollback_last_env_change را انتخاب کرده باشد، همان را اجرا می‌کند.
+ *  - اگر تغییر env قابل‌بازگشتی نبود یا مقدار قبلی موجود نبود، restart را اجرا می‌کند.
+ *  - در strict، rollback/restart از همان دروازهٔ تأیید عبور می‌کنند و در حالت
+ *    pending هرگز به‌صورت خودکار به اقدام دیگری نمی‌پرند.
  */
-async function defaultRemediate(app: string): Promise<GuardedOutcome> {
-  return runGuardedAction("liara_set_env", {
-    app,
-    variables: [{ key: "BUG_MODE", value: "off" }],
-  });
+async function defaultRemediate(
+  app: string,
+  context?: WatchRemediationContext,
+): Promise<GuardedOutcome> {
+  const selected = context?.selectedRemedy ??
+    (context?.rollbackAvailable ? "rollback_last_env_change" : "restart");
+
+  if (selected === "rollback_last_env_change" && context?.rollbackAvailable !== false) {
+    const outcome = await runGuardedAction("rollback_last_env_change", {
+      app,
+      incidentAt: context?.incidentAt,
+    });
+    const content = (outcome.res.structuredContent ?? {}) as Record<string, unknown>;
+    const fallbackCode = String(content["code"] ?? "");
+    if (
+      !outcome.executed &&
+      [
+        "NO_RECENT_ENV_CHANGE",
+        "ENV_HISTORY_WITHOUT_VALUES",
+        "ENV_CHANGED_SINCE",
+        "INVALID_INCIDENT_AT",
+      ].includes(fallbackCode)
+    ) {
+      return runGuardedAction("liara_restart", { app });
+    }
+    return outcome;
+  }
+
+  return runGuardedAction("liara_restart", { app });
 }
 
 /* ─────────────────────────── اجرای یک چرخه ─────────────────────────── */
@@ -456,10 +516,21 @@ export function remediationAudit(outcome: GuardedOutcome | null): AuditApproval 
   return "approved";
 }
 
-function remediationFromOutcome(outcome: GuardedOutcome): WatchRemediation {
+function remediationFromOutcome(
+  outcome: GuardedOutcome,
+  preferred: WatchRemediation["kind"] = "unknown",
+): WatchRemediation {
   const approval = remediationAudit(outcome);
+  const content = (outcome.res.structuredContent ?? {}) as Record<string, unknown>;
+  const action = String(content["action"] ?? "");
+  const kind: WatchRemediation["kind"] =
+    action === "rollback_last_env_change"
+      ? "rollback_last_env_change"
+      : action === "restart"
+        ? "liara_restart"
+        : preferred;
   return {
-    kind: "liara_set_env",
+    kind,
     executed: outcome.executed,
     ...(outcome.approvalId ? { approvalId: outcome.approvalId } : {}),
     approval,
@@ -672,7 +743,12 @@ export async function runWatchCheck(options: WatchOptions): Promise<WatchCheckRe
     let diagnosis: DiagnosisRun | null = null;
     let diagnosisError: string | undefined;
     try {
-      diagnosis = await diagnose(app, symptom);
+      diagnosis = await diagnose(app, symptom, {
+        incidentAt,
+        probe: watchProbeResult(app, snapshot),
+        events: eventsResult.items,
+        eventWindowMinutes: DEFAULT_EVIDENCE_WINDOW_MINUTES,
+      });
     } catch (err) {
       diagnosisError = (err as Error).message;
     }
@@ -686,11 +762,22 @@ export async function runWatchCheck(options: WatchOptions): Promise<WatchCheckRe
     } else if (!diagnosis.report.hypotheses.length) {
       remediationSkippedReason = "تشخیص به علت مشخصی نرسید؛ برای جلوگیری از تغییر کورکورانه، اقدامی انجام نشد.";
     } else {
+      const preferredKind: WatchRemediation["kind"] =
+        diagnosis.selectedRemedy === "rollback_last_env_change"
+          ? "rollback_last_env_change"
+          : "liara_restart";
       try {
-        remediation = remediationFromOutcome(await remediate(app));
+        remediation = remediationFromOutcome(
+          await remediate(app, {
+            incidentAt,
+            selectedRemedy: diagnosis.selectedRemedy,
+            rollbackAvailable: diagnosis.rollbackAvailable,
+          }),
+          preferredKind,
+        );
       } catch (err) {
         remediation = {
-          kind: "liara_set_env",
+          kind: preferredKind,
           executed: false,
           approval: "error",
           auto: false,
@@ -765,6 +852,10 @@ export function watchSummary(result: WatchCheckResult): Record<string, unknown> 
     cooldown: result.cooldown,
     incidentId: result.incident?.incidentId,
     diagnosisStatus: result.incident?.diagnosis?.report.status,
+    selectedRemedy: result.incident?.diagnosis?.selectedRemedy,
+    remedySource: result.incident?.diagnosis?.remedySource,
+    rollbackAvailable: result.incident?.diagnosis?.rollbackAvailable,
+    remediationKind: result.incident?.remediation?.kind,
     analysisSource: result.incident?.diagnosis
       ? result.incident.diagnosis.llmUsed
         ? "llm"

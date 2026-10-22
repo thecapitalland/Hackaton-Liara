@@ -30,6 +30,15 @@ import { parsePlans } from "./read.js";
 import { assertPreflight } from '../liara/preflight-gate.js';
 import { redact } from '../redact.js';
 import { quoteCreate, assertQuoteUnchanged, pairLabel } from '../liara/plans.js';
+import {
+  ENV_CHANGE_WINDOW_SEC,
+  diffEnv,
+  findLatestEnvChange,
+  recordEnvChange,
+  type EnvChangeCandidate,
+  type EnvChangeKind,
+  type EnvVar,
+} from "../env-history.js";
 
 const WRITE_ANNOTATIONS = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } as const;
 
@@ -66,6 +75,11 @@ const actionSchemas: Record<string, z.ZodType> = {
   liara_scale: z.object({ app: appName, on: z.boolean() }),
   liara_resize: z.object({ app: appName, planID: z.string().min(1) }),
   liara_set_env: z.object({ app: appName, variables: z.array(variable), unset: z.array(z.string()).optional() }),
+  rollback_last_env_change: z.object({
+    app: appName,
+    incidentAt: z.string().min(1).optional(),
+    windowSec: z.number().int().min(60).max(3600).optional(),
+  }),
   liara_add_domain: z.object({ app: appName, domain: z.string().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/i) }),
   liara_enable_ssl: z.object({ domain: z.string().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/i) }),
 };
@@ -101,7 +115,7 @@ const SIMPLE_CHOICES: ApprovalChoice[] = [
 
 /* ─────────────────────────── کمکی‌ها ─────────────────────────── */
 
-async function getProjectEnvs(app: string): Promise<{ key: string; value: string }[]> {
+export async function getProjectEnvs(app: string): Promise<EnvVar[]> {
   const { data } = await liaraGet<Record<string, unknown>>(EP.getProject(app));
   const project = (data?.project ?? data) as Record<string, unknown>;
   const envs = project["envs"];
@@ -143,6 +157,90 @@ export function mergeEnvVars(
   for (const key of unset) map.delete(key);
   for (const v of vars) map.set(v.key, v.value);
   return [...map.entries()].map(([key, value]) => ({ key, value }));
+}
+
+export interface AppliedEnvChange {
+  current: EnvVar[];
+  merged: EnvVar[];
+  changes: ReturnType<typeof diffEnv>;
+  historyRecorded: boolean;
+  historyId?: string;
+}
+
+/**
+ * خواندن env فعلی، ادغام، نوشتن و ثبت تاریخچه.
+ * این تابع فقط پس از عبور از دروازهٔ تأیید صدا زده می‌شود.
+ */
+export async function applyEnvChange(
+  app: string,
+  vars: EnvVar[],
+  unset: string[],
+  meta: { kind?: EnvChangeKind; stateDir?: string; at?: string } = {},
+): Promise<AppliedEnvChange> {
+  const current = await getProjectEnvs(app);
+  const merged = mergeEnvVars(current, vars, unset);
+  const changes = diffEnv(current, merged);
+
+  if (!changes.length) {
+    return { current, merged, changes, historyRecorded: false };
+  }
+
+  await liaraPost(EP.updateEnvs, {
+    project: app,
+    variables: merged.map(({ key, value }) => ({ key, value })),
+  });
+
+  let historyRecorded = false;
+  let historyId: string | undefined;
+  try {
+    const record = recordEnvChange(app, current, merged, {
+      kind: meta.kind ?? "set_env",
+      ...(meta.stateDir ? { stateDir: meta.stateDir } : {}),
+      ...(meta.at ? { at: meta.at } : {}),
+    });
+    historyRecorded = Boolean(record);
+    historyId = record?.id;
+  } catch {
+    // ثبت تاریخچه نباید موفقیت تغییر env را رد کند؛ فقط rollback بعدی ممکن نیست.
+    historyRecorded = false;
+  }
+
+  return { current, merged, changes, historyRecorded, ...(historyId ? { historyId } : {}) };
+}
+
+function envDiffText(changes: ReturnType<typeof diffEnv>): string {
+  return changes
+    .map((change) => {
+      if (change.after === null) return `− ${change.key}`;
+      if (change.before === null) return `+ ${change.key} = ${maskValue(change.after)}`;
+      return `~ ${change.key}: ${maskValue(change.before)} → ${maskValue(change.after)}`;
+    })
+    .join("\n");
+}
+
+/**
+ * برنامهٔ دقیق rollback: فقط کلیدهای همان change، با مقدار before.
+ * اگر مقدار فعلی با after آن change فرق داشته باشد، برای جلوگیری از بازنویسی
+ * یک تغییر جدیدتر، mismatch برمی‌گردد و هیچ نوشتنی نباید انجام شود.
+ */
+export function planEnvRollback(
+  current: EnvVar[],
+  change: Pick<EnvChangeCandidate, "changes">,
+): { vars: EnvVar[]; unset: string[]; mismatches: string[] } {
+  const currentMap = new Map(current.map((row) => [row.key, row.value]));
+  const mismatches = change.changes
+    .filter((item) => {
+      const value = currentMap.has(item.key) ? currentMap.get(item.key)! : null;
+      return value !== item.after;
+    })
+    .map((item) => item.key);
+  const vars = change.changes
+    .filter((item) => item.before !== null)
+    .map((item) => ({ key: item.key, value: item.before! }));
+  const unset = change.changes
+    .filter((item) => item.before === null)
+    .map((item) => item.key);
+  return { vars, unset, mismatches };
 }
 
 /* ─────────────────────────── عملیات: ساخت اپ ─────────────────────────── */
@@ -219,33 +317,140 @@ registerAction({
     const vars = (p["variables"] as { key: string; value: string }[] | undefined) ?? [];
     const unset = (p["unset"] as string[] | undefined) ?? [];
 
-    const current = await getProjectEnvs(app);
-    const merged = mergeEnvVars(current, vars, unset);
-    const map = new Map(merged.map((e) => [e.key, e.value]));
-
-    const diff = [
-      ...vars.map((v) => `+ ${v.key} = ${maskValue(v.value)}`),
-      ...unset.map((k) => `− ${k}`),
-    ].join("\n");
-
-    const body = {
-      project: app,
-      variables: [...map.entries()].map(([key, value]) => ({ key, value })),
-    };
-    await liaraPost(EP.updateEnvs, body);
+    const applied = await applyEnvChange(app, vars, unset, { kind: "set_env" });
+    const diff = envDiffText(applied.changes);
 
     return {
       text: [
-        `✅ متغیرهای محیطی روی «${app}» به‌روزرسانی شد.`,
+        applied.changes.length
+          ? `✅ متغیرهای محیطی روی «${app}» به‌روزرسانی شد.`
+          : `ℹ️ مقدار متغیرهای محیطی «${app}» تغییری لازم نداشت.`,
         `🔄 سرویس ری‌استارت می‌شود (مقادیر قبلی در فهرست کامل حفظ شدند).`,
         `📋 تغییرات:\n${diff || "—"}`,
+        ...(applied.historyRecorded ? [] : ["⚠️ تاریخچهٔ محلی env ثبت نشد؛ rollback دقیق بعدی ممکن نیست."]),
       ].join("\n"),
       structured: {
         ok: true,
         app,
-        changed: vars.map((v) => v.key),
-        unset,
-        totalKeys: map.size,
+        changed: applied.changes.filter((c) => c.after !== null).map((c) => c.key),
+        unset: applied.changes.filter((c) => c.after === null).map((c) => c.key),
+        totalKeys: applied.merged.length,
+        changedKeys: applied.changes.map((c) => c.key),
+        historyRecorded: applied.historyRecorded,
+        historyId: applied.historyId,
+      },
+    };
+  },
+});
+
+/* ─────────────────────────── عملیات: rollback آخرین تغییر env ─────────────────────────── */
+
+registerAction({
+  kind: "rollback_last_env_change",
+  risk: "low",
+  impact:
+    "برگرداندن فقط آخرین تغییر env قبل از رخداد — سرویس ری‌استارت می‌شود و قطعی کوتاه دارد",
+  appScoped: true,
+  describe: (p) => {
+    const at = p["incidentAt"] ? `قبل از ${faTime(String(p["incidentAt"]))}` : "در ۱۰ دقیقهٔ اخیر";
+    return `برگرداندن آخرین تغییر env اپ «${String(p["app"] ?? "")}» ${at} (فقط کلیدهای همان تغییر).`;
+  },
+  choices: () => SIMPLE_CHOICES,
+  run: async (p) => {
+    const app = String(p["app"] ?? "");
+    const incidentAt = String(p["incidentAt"] ?? new Date().toISOString());
+    if (!Number.isFinite(Date.parse(incidentAt))) {
+      return {
+        text: "⚠️ زمان شروع رخداد نامعتبر است؛ rollback انجام نشد. پیشنهاد: restart سرویس.",
+        structured: {
+          ok: false,
+          action: "restart",
+          code: "INVALID_INCIDENT_AT",
+          fallback: "restart",
+        },
+      };
+    }
+    const windowSec = Number(p["windowSec"] ?? ENV_CHANGE_WINDOW_SEC);
+    const found = await findLatestEnvChange(app, incidentAt, {
+      windowSec: Number.isFinite(windowSec) ? windowSec : ENV_CHANGE_WINDOW_SEC,
+    });
+
+    if (!found) {
+      return {
+        text: [
+          "ℹ️ تغییر env اخیری قبل از رخداد پیدا نشد؛ rollback امنی وجود ندارد.",
+          "➡️ پیشنهاد: restart سرویس (کم‌خطر و قابل انجام).",
+        ].join("\n"),
+        structured: {
+          ok: false,
+          action: "restart",
+          code: "NO_RECENT_ENV_CHANGE",
+          fallback: "restart",
+        },
+      };
+    }
+
+    if (!found.revertable || !found.changes.length) {
+      return {
+        text: [
+          `ℹ️ تغییر env در ${faTime(found.at)} دیده شد (منبع: ${found.source})، اما مقدار قبلی آن در تاریخچهٔ محلی ثبت نشده است.`,
+          "برای جلوگیری از تغییر کورکورانه، rollback انجام نشد.",
+          "➡️ پیشنهاد: restart سرویس.",
+        ].join("\n"),
+        structured: {
+          ok: false,
+          action: "restart",
+          code: "ENV_HISTORY_WITHOUT_VALUES",
+          fallback: "restart",
+          source: found.source,
+          changeAt: found.at,
+          keys: found.keys,
+        },
+      };
+    }
+
+    const current = await getProjectEnvs(app);
+    const plan = planEnvRollback(current, found);
+    if (plan.mismatches.length) {
+      return {
+        text: [
+          "⚠️ از زمان ثبت آن تغییر، مقدار env دوباره عوض شده است؛ برای جلوگیری از بازنویسی تغییر جدیدتر، rollback انجام نشد.",
+          "➡️ پیشنهاد: restart سرویس.",
+        ].join("\n"),
+        structured: {
+          ok: false,
+          action: "restart",
+          code: "ENV_CHANGED_SINCE",
+          fallback: "restart",
+          changeAt: found.at,
+          keys: plan.mismatches,
+        },
+      };
+    }
+
+    const applied = await applyEnvChange(app, plan.vars, plan.unset, { kind: "rollback" });
+    const diff = envDiffText(applied.changes);
+
+    return {
+      text: [
+        "✅ آخرین تغییر env قبل از رخداد برگردانده شد.",
+        `🕒 زمان تغییر: ${faTime(found.at)} — منبع: ${found.source}`,
+        `📋 کلیدهای بازگردانده‌شده: ${found.changes.map((change) => change.key).join("، ")}`,
+        `🔄 سرویس ری‌استارت می‌شود.`,
+        `📋 تغییرات:\n${diff || "—"}`,
+        ...(applied.historyRecorded ? [] : ["⚠️ تاریخچهٔ محلی rollback ثبت نشد."]),
+      ].join("\n"),
+      structured: {
+        ok: true,
+        app,
+        action: "rollback_last_env_change",
+        changeId: found.id,
+        changeAt: found.at,
+        source: found.source,
+        keys: found.changes.map((change) => change.key),
+        changedKeys: applied.changes.map((change) => change.key),
+        historyRecorded: applied.historyRecorded,
+        historyId: applied.historyId,
       },
     };
   },
@@ -420,6 +625,10 @@ export async function runGuardedAction(
     return { res: result(`❌ عملیات ناشناخته: ${kind}`, { ok: false }), executed: false };
   }
 
+  // زمان پیشنهاد را مقید کن تا تأیید دیرهنگام، تغییر env جدیدتری را برنگرداند.
+  if (kind === "rollback_last_env_change" && !params["incidentAt"]) {
+    params = { ...params, incidentAt: new Date().toISOString() };
+  }
   actionSchemas[kind]?.parse(params);
   const app = String(params['app'] ?? params['name'] ?? '') || undefined;
   const notAllowed = await checkScope(kind, params);
@@ -568,6 +777,29 @@ export function registerWriteTools(server: McpServer): void {
       }),
   );
 
+  /* ── rollback_last_env_change ───────────────────────────────────── */
+  server.registerTool(
+    "rollback_last_env_change",
+    {
+      title: "برگرداندن آخرین تغییر env",
+      description:
+        "آخرین تغییر متغیرهای محیطی قبل از رخداد را از تاریخچهٔ محلی env پیدا می‌کند و فقط همان کلیدها را به مقدار قبلی برمی‌گرداند (نیازمند تأیید؛ risk=low). اگر تغییر اخیر یا مقدار قبلی در دسترس نباشد، اجرا نمی‌شود و restart پیشنهاد می‌شود.",
+      inputSchema: {
+        app: z.string().min(1).describe("نام اپ در لیارا"),
+        incidentAt: z
+          .string()
+          .optional()
+          .describe("زمان شروع رخداد (ISO)؛ برای جست‌وجوی تغییر قبل از آن"),
+      },
+      annotations: WRITE_ANNOTATIONS,
+    },
+    async ({ app, incidentAt }) =>
+      audited("rollback_last_env_change", app, { app, incidentAt }, async () => {
+        const out = await runGuardedAction("rollback_last_env_change", { app, incidentAt });
+        return out.res;
+      }),
+  );
+
   /* ── liara_restart ───────────────────────────────────────────────── */
   server.registerTool(
     "liara_restart",
@@ -691,6 +923,10 @@ export function registerWriteTools(server: McpServer): void {
           );
         }
         let merged: Record<string, unknown> = app ? { ...params, app } : { ...params };
+        // زمان پیشنهاد را مقید کن تا تأیید دیرهنگام، تغییر env جدیدتری را برنگرداند.
+        if (kind === "rollback_last_env_change" && !merged["incidentAt"]) {
+          merged = { ...merged, incidentAt: new Date().toISOString() };
+        }
         actionSchemas[kind]?.parse(merged);
         const notAllowed = await checkScope(kind, merged);
         if (notAllowed) return result(notAllowed, { ok: false, code: "APP_NOT_ALLOWLISTED" });

@@ -92,5 +92,14 @@
 
 ## Configurable approval policy · 2026-10-22
 - Added `APPROVAL_POLICY` (`strict` default, `balanced`, `auto`) and a single `decideApproval()` in `src/approval.ts`. Risk is `low|medium|high`; high-risk/costly actions always require approval.
-- `balanced`: `restart` and `BUG_MODE=off` auto; other env changes/releases require approval. `auto`: low/medium auto.
-- Automatic runs include «اجرای خودکار طبق سیاست …» and are audited as `auto:<policy>`. `npm test` **55/55** PASS; typecheck PASS. No live provider write for policy tests.
+- `balanced` at the time: `restart` and `BUG_MODE=off` auto; other env changes/releases require approval. `auto`: low/medium auto. **Superseded 2026-10-23:** the demo-specific `BUG_MODE=off` exception was removed; balanced now auto-runs `restart` and only an exact, journal-backed `rollback_last_env_change`; `liara_set_env` remains medium.
+- Automatic runs include «اجرای خودکار طبق سیاست …» and are audited as `auto:<policy>`. `npm test` **55/55** PASS at the time; typecheck PASS. No live provider write for policy tests.
+
+## Generic env rollback + incident-window diagnosis · 2026-10-23
+- Replaced the demo-specific `BUG_MODE=off` watcher remedy with `rollback_last_env_change`: it finds the latest env change before `incidentAt` across the local journal, audit metadata, and Liara `ENV_UPDATE` release metadata, then reverts only that change's keys.
+- Added `.agate/env-history-<app>.json` (gitignored, mode 0600) with raw before/after values only for keys changed through this server. Audit/release-only changes are metadata and are never rolled back blindly. A latest rollback record suppresses older journal candidates, and current-env mismatch/newer changes require `restart`.
+- `rollback_last_env_change` is declared `low` risk; `liara_set_env` remains `medium`. The hidden BUG_MODE exception was removed. A rollback proposal without `incidentAt` is pinned at proposal time so late approval cannot revert a newer change.
+- Diagnosis evidence is anchored to `incidentAt` with a 10-minute default window; old/undated events and old logs are dropped, and crash-loop evidence uses the same window. The watcher now passes the same cycle's 9 probe samples and events into diagnosis, so counts match (e.g. `3/9`).
+- The LLM receives only `restart` plus `rollback_last_env_change` when an exact revertable change exists; invalid selections are ignored and rules fallback applies. Added regression tests for journal/window/audit/release/rollback-plan/prompt/same-cycle behavior.
+- Final local checks: typecheck PASS, tests **87/87**, build PASS, offline smoke PASS (33 tools), live read-only smoke PASS. `npm run secret-scan` PASS. Live env rollback and live watcher remediation remain **NOT_RUN**; `APPROVAL_POLICY=strict` and no watcher process is running.
+- Connection UX: `SERVER_INSTRUCTIONS` and `--help` now document the start path and low-risk action; startup stderr reports version, allowed app, token state, approval policy, watch settings, and `cwd`/state/package paths. README updated with journal privacy, incident-window, remedy-selection, and IDE connection guidance.
