@@ -1,0 +1,43 @@
+{
+  "name": "agate-liara",
+  "version": "0.1.0",
+  "description": "Agate Co. — Agate-Liara: MCP server for Liara PaaS (deploy, diagnose, remediate, verify) built for the Starcoach Agentic AI hackathon (Liara challenge).",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "dist/index.js",
+  "bin": {
+    "agate-liara": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "schemas",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "test": "tsx --test \"test/**/*.test.ts\"",
+    "smoke": "tsx scripts/smoke.ts",
+    "preflight": "tsx scripts/preflight.ts",
+    "demo": "node demo-site/server.mjs",
+    "demo:test": "node demo-site/test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "dotenv": "^18.0.8",
+    "ignore": "^7.0.13",
+    "tar": "^7.5.22",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}
