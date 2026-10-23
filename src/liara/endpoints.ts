@@ -31,8 +31,13 @@ export const EP = {
   restart: (name: string) => `/v1/projects/${enc(name)}/actions/restart`,
   scale: (name: string) => `/v1/projects/${enc(name)}/actions/scale`,
   resize: (name: string) => `/v1/projects/${enc(name)}/resize`,
-  /** POST ساخت دیسک. منبع: openapi.liara.ir/paas.yaml operationId createDisk. */
+  /**
+   * GET و POST دیسک، یک مسیر.
+   * GET: @liara/cli@9.6.0 package/lib/commands/init.js:260 و پاسخ disks.disks.
+   * POST: package/lib/commands/disk/create.js:20 با {name, size}. OpenAPI: createDisk.
+   */
   createDisk: (name: string) => `/v1/projects/${enc(name)}/disks`,
+  listDisks: (name: string) => `/v1/projects/${enc(name)}/disks`,
 
   /* ── مشاهده ──────────────────────────────────────────────────────── */
   logsV1: (name: string) => `/v1/projects/${enc(name)}/logs`,

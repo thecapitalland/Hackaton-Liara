@@ -110,10 +110,14 @@ export function hashParams(tool: string, app: string | undefined, params: Record
  */
 export function effectiveRisk(
   tool: string,
-  _params: Record<string, unknown>,
+  params: Record<string, unknown>,
   declaredRisk: Risk,
 ): Risk {
   if (ALWAYS_APPROVAL_KINDS.includes(tool)) return "high";
+  // ساخت دیسک داخل deploy همان POST پرهزینهٔ disk:create است و نباید با ریسک medium خودکار شود.
+  if (tool === "liara_deploy" && Array.isArray(params["diskCreates"]) && params["diskCreates"].length > 0) {
+    return "high";
+  }
   return declaredRisk;
 }
 

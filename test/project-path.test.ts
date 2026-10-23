@@ -13,7 +13,7 @@ test("مسیر نسبی برای projectPath رد می‌شود", () => {
   assert.throws(() => resolveProjectPath("demo-site"), /مسیر مطلق/);
 });
 
-test("liara.json برای python و docker و disks بر فایل‌ها اولویت دارد و release دیسک نمی‌فرستد", () => {
+test("liara.json برای python و docker و disks بر فایل‌ها اولویت دارد و release فقط name و mountTo می‌فرستد", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "agate-project-"));
   try {
     writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "sample", scripts: { start: "node server.js" } }));
@@ -35,7 +35,7 @@ test("liara.json برای python و docker و disks بر فایل‌ها اول�
     const body = buildReleaseBody(python, "src_1");
     assert.equal(body["type"], "python");
     assert.equal(body["port"], 8000);
-    assert.equal("disks" in body, false);
+    assert.deepEqual(body["disks"], [{ name: "data", mountTo: "/data" }]);
 
     writeFileSync(path.join(dir, "liara.json"), JSON.stringify({ platform: "docker", port: 8080 }));
     writeFileSync(path.join(dir, "Dockerfile.prod"), "FROM python:3.12\n");

@@ -24,7 +24,7 @@
 | `audit_tail` | خواندنی | read-only | — | خیر |
 | `liara_create_app` | اقدام نوشتنی | write | high | همیشه |
 | `liara_create_disk` | اقدام نوشتنی | write | high | همیشه |
-| `liara_deploy` | استقرار | write | medium | طبق سیاست |
+| `liara_deploy` | استقرار | write | medium تا high | طبق سیاست، و همیشه اگر دیسک جدید ساخته شود |
 | `liara_set_env` | اقدام نوشتنی | write | medium | طبق سیاست |
 | `rollback_last_env_change` | اقدام نوشتنی | write | medium | طبق سیاست |
 | `liara_restart` | اقدام نوشتنی | write | low | طبق سیاست |
@@ -124,7 +124,7 @@ state در `AGATE_STATE_DIR` است. اگر خالی باشد `<package>/.agate`
 | محدودیت | رفتار اینجا |
 |---|---|
 | rollback عمومی سورس نیست | `rollback_last_env_change` فقط env محلی را برمی‌گرداند. برگشت سورس یعنی deploy تازهٔ سورس قبلی با کارت تازه |
-| mount دیسک در OpenAPI نیست | `liara_create_disk` فقط `POST /v1/projects/{name}/disks` با `{ name, size }` است. بدنهٔ release فیلد `disks` ندارد |
+| mount دیسک در OpenAPI نیست | release فیلد `disks: [{name, mountTo}]` را از `@liara/cli@9.6.0` (`deploy.js:264` و `:553-558`) می‌فرستد. ساخت جداست: `{name, size}` |
 | log streaming نیست | لاگ با polling و بازهٔ محدود خوانده می‌شود |
 | endpoint جداگانهٔ plans نیست | کاتالوگ از `GET /v1/me` است. `available=true` پذیرش POST را تضمین نمی‌کند |
 | health-check API نیست | پروب HTTP جداگانه است و بدنهٔ `/health` به مدل نمی‌رود |
@@ -306,9 +306,9 @@ state در `AGATE_STATE_DIR` است. اگر خالی باشد `<package>/.agate`
 
 **خروجی:** کارت با quote، یا نتیجهٔ POST. اگر قیمت در API نباشد عدد ماهانه ساخته نمی‌شود.
 
-**اثر روی لیارا:** `POST /v1/projects/{name}/disks` با `{ name, size }`. mount انجام نمی‌شود. ابزار حذف دیسک وجود ندارد.
+**اثر روی لیارا:** `POST /v1/projects/{name}/disks` با `{ name, size }`. این POST خودش mount نمی‌کند؛ mount در release با `{name, mountTo}` است. ابزار حذف دیسک وجود ندارد.
 
-**ریسک و محدودیت:** `high` و همیشه کارت. اپ باید allowlist یا owned باشد. نام دیسک در رجیستری اقدام الگوی نام اپ را دارد، سخت‌گیرانه‌تر از `min(1)` ابزار. مسیر mount در OpenAPI نیست و حدس زده نمی‌شود.
+**ریسک و محدودیت:** `high` و همیشه کارت. اپ باید allowlist یا owned باشد. نام دیسک در رجیستری اقدام الگوی نام اپ را دارد، سخت‌گیرانه‌تر از `min(1)` ابزار. اندازه باید داده شود و حدس زده نمی‌شود.
 
 ## `liara_deploy`
 
@@ -316,11 +316,11 @@ state در `AGATE_STATE_DIR` است. اگر خالی باشد `<package>/.agate`
 
 **ورودی:** `app` رشته، الزامی. `projectPath` و `path` رشته و اختیاری، ولی یکی از آن‌ها باید مسیر مطلق باشد.
 
-**خروجی:** کارت medium، یا شناسهٔ release و وضعیت بیلد. مسیر خالی یا نسبی `PROJECT_PATH_REQUIRED` است و کارتی ساخته نمی‌شود.
+**خروجی:** کارت، یا شناسهٔ release و وضعیت بیلد. اگر دیسکی در `liara.json` باشد و روی اپ نباشد و `size` هم نداشته باشد، کارت دستی `DISK_SIZE_REQUIRED` است و release ساخته نمی‌شود. مسیر خالی یا نسبی `PROJECT_PATH_REQUIRED` است.
 
-**اثر روی لیارا:** آپلود سورس و POST release. سرویس چند ثانیه بازنشانی می‌شود. `.env`، `.git`، `node_modules` و `.agate` داخل بسته نمی‌روند. rollback سورس از API نیست؛ برگشت یعنی deploy تازهٔ سورس قبلی با کارت تازه.
+**اثر روی لیارا:** اگر دیسک نباشد و `size` در `liara.json` باشد، اول `POST /v1/projects/{name}/disks` با `{name, size}` و بعد release. بدنهٔ release علاوه بر `sourceID`، `port`، `type`، `message` و `build`، در صورت وجود دیسک شامل `disks: [{name, mountTo}]` است. سرویس چند ثانیه بازنشانی می‌شود. `.env`، `.git`، `node_modules` و `.agate` داخل بسته نمی‌روند. rollback سورس از API نیست. دیسک ساخته‌شده ابزار حذف ندارد.
 
-**ریسک و محدودیت:** `medium`. در `strict` و `balanced` کارت می‌خواهد و در `auto` خودکار است. اپ باید allowlist یا owned باشد. بدنهٔ release شامل `sourceID`، `port`، `type`، `message` و `build` است و دیسک ندارد. `Dockerfile.prod` وقتی همان فایل تشخیص داده شود فرستاده می‌شود.
+**ریسک و محدودیت:** بدون ساخت دیسک `medium` است. با ساخت دیسک `high` است و در هر سیاست کارت می‌خواهد. اپ باید allowlist یا owned باشد. اندازهٔ غایب حدس زده نمی‌شود. `Dockerfile.prod` وقتی همان فایل تشخیص داده شود فرستاده می‌شود.
 
 ## `liara_set_env`
 
@@ -474,7 +474,7 @@ state در `AGATE_STATE_DIR` است. اگر خالی باشد `<package>/.agate`
 
 **خروجی:** اگر اپ نباشد کارت ساخت یا درخواست انتخاب پلن. اگر اپ باشد نتیجهٔ `liara_deploy`. مسیر نامطلق `PROJECT_PATH_REQUIRED` است.
 
-**اثر روی لیارا:** ساخت اپ `high` و برگشت خودکار ندارد. deploy بعدی `medium` است و سرویس را کوتاه بازنشانی می‌کند. ریشهٔ مخزن MCP را به‌عنوان سایت ندهید.
+**اثر روی لیارا:** ساخت اپ `high` و برگشت خودکار ندارد. deploy بعدی از `liara_deploy` است: mount دیسک داخل release، و ساخت دیسک غایب فقط با `size` صریح و کارت `high`. ریشهٔ مخزن MCP را به‌عنوان سایت ندهید.
 
 **ریسک و محدودیت:** اپ موجودِ غیرمجاز رد می‌شود. اپ تازه هنوز owned نیست و کارت `high` دروازهٔ آن است. پلتفرم از `liara.json` یا فایل‌ها می‌آید و فقط `node`، `docker`، `python` و `static` در enum ساخت هستند.
 

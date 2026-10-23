@@ -37,7 +37,22 @@ import {
   hasEnvBaseline,
   type EnvChangeCandidate,
 } from "../env-history.js";
-import { describeDiskDeploy, detectStack, readProbePaths, type StackDetection } from "../deploy/detect.js";
+import { detectStack, readProbePaths, type StackDetection } from "../deploy/detect.js";
+import {
+  cardShowsDiskPlan,
+  createsAreAuthorized,
+  diskCreateBody,
+  formatDiskCard,
+  missingDiskSizeCard,
+  mountsAreAuthorized,
+  parseRemoteDisks,
+  planDiskMounts,
+  releaseDiskField,
+  type DiskCreateSpec,
+  type DiskLine,
+  type ReleaseDisk,
+} from "../deploy/disks.js";
+import { assertDiskQuoteUnchanged, quoteDisk, type DiskQuote } from "../liara/plans.js";
 import { resolveProjectPath, sanitizeProbePaths } from "../deploy/project-path.js";
 import { humanSize, packageSource } from "../deploy/package.js";
 import { httpProbe, probeSummary, sleep } from "../probe.js";
@@ -153,11 +168,14 @@ export function buildReleaseBody(
       `منطقهٔ بیلد «${location}» معتبر نیست؛ فقط ${BUILD_LOCATIONS.join(" یا ")} مجاز است.`,
     );
   }
+  const disks = releaseDiskField(detection.disks ?? []);
   return {
     sourceID,
     port: detection.port ?? 3000,
     type: detection.platform,
     message: `Agate-Liara — ${new Date().toISOString()}`,
+    // @liara/cli@9.6.0 package/lib/commands/deploy.js:264 و :553-558 — disks: [{name, mountTo}]
+    ...(disks.length ? { disks } : {}),
     build: {
       cache: true,
       args: {},
@@ -167,11 +185,85 @@ export function buildReleaseBody(
   };
 }
 
+export interface DeployDiskAuthorization {
+  releaseDisks?: ReleaseDisk[];
+  diskCreates?: (DiskCreateSpec & { quote?: DiskQuote })[];
+  diskLines?: DiskLine[];
+}
+
+async function prepareAuthorizedDisks(
+  app: string,
+  local: NonNullable<StackDetection["disks"]>,
+  authorized: DeployDiskAuthorization | undefined,
+): Promise<{ stopped?: DeployOutcome; note?: string }> {
+  if (!local.length) return {};
+  const listed = await liaraGet(EP.listDisks(app));
+  const remote = parseRemoteDisks(listed.data);
+  if (!remote) {
+    return {
+      stopped: {
+        text: "پاسخ فهرست دیسک فیلد disks را که CLI می‌خواند نداشت. هیچ دیسکی ساخته نشد و release ارسال نشد.",
+        structured: { ok: false, code: "DISK_LIST_UNRECOGNIZED" },
+      },
+    };
+  }
+  const plan = planDiskMounts(local, remote);
+  if (plan.blocked.length) {
+    const card = missingDiskSizeCard(plan.blocked);
+    return { stopped: { text: card.text, structured: card.structured } };
+  }
+  if (!mountsAreAuthorized(plan.releaseDisks, authorized?.releaseDisks)) {
+    return {
+      stopped: {
+        text: "کارت تأیید همین نام و mountTo را ندارد. release با دیسک ارسال نشد.",
+        structured: { ok: false, code: "DISK_MOUNT_UNAPPROVED" },
+      },
+    };
+  }
+  if (!createsAreAuthorized(plan.creates, authorized?.diskCreates)) {
+    return {
+      stopped: {
+        text: "ساخت دیسک روی کارت تأیید با همین اندازه و mount نیست. هیچ POSTی ارسال نشد.",
+        structured: { ok: false, code: "DISK_CREATE_UNAPPROVED" },
+      },
+    };
+  }
+  if (!cardShowsDiskPlan(authorized?.diskLines, plan.releaseDisks, plan.creates)) {
+    return {
+      stopped: {
+        text: "کارت تأیید اندازه و mountTo همین دیسک‌ها را نشان نمی‌دهد. هیچ POSTی ارسال نشد.",
+        structured: { ok: false, code: "DISK_CARD_MISMATCH" },
+      },
+    };
+  }
+  const notes = [formatDiskCard(plan)];
+  for (const create of plan.creates) {
+    const approved = authorized?.diskCreates?.find((item) => item.name === create.name);
+    try {
+      assertDiskQuoteUnchanged(approved?.quote, await quoteDisk({ name: create.name, size: create.size }));
+    } catch (err) {
+      return {
+        stopped: {
+          text: (err as Error).message,
+          structured: { ok: false, code: "DISK_QUOTE_CHANGED" },
+        },
+      };
+    }
+    await liaraPost(EP.createDisk(app), diskCreateBody(create));
+    notes.push(`دیسک «${create.name}» ساخته شد. mount در release: ${create.mountTo}`);
+  }
+  return { note: notes.filter(Boolean).join("\n") };
+}
+
 /**
  * بسته‌بندی ← آپلود ← انتشار ← انتظار ← پروب.
  * توسط liara_deploy و deploy_project استفاده می‌شود.
  */
-export async function deploySourceToApp(app: string, srcPath: string): Promise<DeployOutcome> {
+export async function deploySourceToApp(
+  app: string,
+  srcPath: string,
+  authorized?: DeployDiskAuthorization,
+): Promise<DeployOutcome> {
   const lines: string[] = [];
   const folder = resolveProjectPath(srcPath);
 
@@ -183,8 +275,9 @@ export async function deploySourceToApp(app: string, srcPath: string): Promise<D
   if (detection.requiredEnv.length) {
     lines.push(`• متغیرهای محیطی موردنیاز: ${detection.requiredEnv.join("، ")}`);
   }
-  const diskNote = describeDiskDeploy(detection.disks ?? []);
-  if (diskNote) lines.push(diskNote);
+  const prepared = await prepareAuthorizedDisks(app, detection.disks ?? [], authorized);
+  if (prepared.stopped) return prepared.stopped;
+  if (prepared.note) lines.push(prepared.note);
 
   lines.push(fa.deployPackage);
   const packed = await packageSource(folder);

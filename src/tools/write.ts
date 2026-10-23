@@ -31,7 +31,16 @@ import { parsePlans } from "./read.js";
 import { assertPreflight } from '../liara/preflight-gate.js';
 import { redact } from '../redact.js';
 import { quoteCreate, assertQuoteUnchanged, quoteDisk, assertDiskQuoteUnchanged, pairLabel, type DiskQuote } from '../liara/plans.js';
-import { describeDiskDeploy, detectStack } from "../deploy/detect.js";
+import { detectStack } from "../deploy/detect.js";
+import {
+  formatDiskCard,
+  missingDiskSizeCard,
+  parseRemoteDisks,
+  planDiskMounts,
+  type DiskCreateSpec,
+  type DiskLine,
+  type ReleaseDisk,
+} from "../deploy/disks.js";
 import { resolveProjectPath } from "../deploy/project-path.js";
 import {
   ENV_CHANGE_WINDOW_SEC,
@@ -459,22 +468,71 @@ registerAction({
   appScoped: true,
   describe: (p) => {
     const folder = String(p["path"] ?? "");
-    let disks = "";
-    try {
-      const detection = detectStack(folder);
-      disks = detection.disks?.length ? `\n${describeDiskDeploy(detection.disks)}` : "";
-    } catch {
-      disks = "";
-    }
-    return `انتشار سورس پوشهٔ «${folder}» روی اپ «${String(p["app"] ?? "")}».${disks}`;
+    const lines = Array.isArray(p["diskLines"]) ? (p["diskLines"] as DiskLine[]) : [];
+    const card = lines.length
+      ? formatDiskCard({ releaseDisks: [], creates: [], blocked: [], lines })
+      : "";
+    const prices = Array.isArray(p["diskCreates"])
+      ? (p["diskCreates"] as { name?: unknown; quote?: DiskQuote }[])
+          .map((item) =>
+            item.quote?.note ? `قیمت «${String(item.name ?? "")}»: ${item.quote.note}` : "",
+          )
+          .filter(Boolean)
+      : [];
+    const extra = [card, ...prices].filter(Boolean).join("\n");
+    return `انتشار سورس پوشهٔ «${folder}» روی اپ «${String(p["app"] ?? "")}».${extra ? `\n${extra}` : ""}`;
   },
   choices: () => SIMPLE_CHOICES,
+  preflight: async (p) => {
+    let folder = "";
+    try {
+      folder = resolveProjectPath(String(p["path"] ?? ""));
+    } catch {
+      return;
+    }
+    const local = detectStack(folder).disks ?? [];
+    if (!local.length) return;
+    const listed = await liaraGet(EP.listDisks(String(p["app"] ?? "")));
+    const remote = parseRemoteDisks(listed.data);
+    if (!remote) {
+      return {
+        ok: false,
+        result: {
+          text: "پاسخ فهرست دیسک فیلد disks را که CLI می‌خواند نداشت. هیچ دیسکی ساخته نشد و release ارسال نشد.",
+          structured: { ok: false, code: "DISK_LIST_UNRECOGNIZED" },
+        },
+      };
+    }
+    const plan = planDiskMounts(local, remote);
+    if (plan.blocked.length) {
+      const card = missingDiskSizeCard(plan.blocked);
+      return { ok: false, result: card };
+    }
+    const diskCreates: (DiskCreateSpec & { quote?: DiskQuote })[] = [];
+    for (const create of plan.creates) {
+      const quote = await quoteDisk({ name: create.name, size: create.size });
+      diskCreates.push({ ...create, quote });
+    }
+    const { diskCard: _diskCard, diskLines: _diskLines, releaseDisks: _releaseDisks, diskCreates: _diskCreates, ...rest } = p;
+    return {
+      ok: true,
+      params: {
+        ...rest,
+        releaseDisks: plan.releaseDisks,
+        diskCreates,
+        diskLines: plan.lines,
+      },
+    };
+  },
   run: async (p) => {
     const app = String(p["app"] ?? "");
     const src = String(p["path"] ?? ".");
-    // منطق دیپلوی در composite.ts پیاده شده است (deploySourceToApp)
     const { deploySourceToApp } = await import("./composite.js");
-    return deploySourceToApp(app, src);
+    return deploySourceToApp(app, src, {
+      releaseDisks: Array.isArray(p["releaseDisks"]) ? (p["releaseDisks"] as ReleaseDisk[]) : undefined,
+      diskCreates: Array.isArray(p["diskCreates"]) ? (p["diskCreates"] as (DiskCreateSpec & { quote?: DiskQuote })[]) : [],
+      diskLines: Array.isArray(p["diskLines"]) ? (p["diskLines"] as DiskLine[]) : undefined,
+    });
   },
 });
 
@@ -1276,6 +1334,22 @@ export function registerWriteTools(server: McpServer): void {
         actionSchemas[kind]?.parse(merged);
         const notAllowed = await checkScope(kind, merged);
         if (notAllowed) return result(notAllowed, { ok: false, code: "APP_NOT_ALLOWLISTED" });
+        delete merged["releaseDisks"];
+        delete merged["diskCreates"];
+        delete merged["diskLines"];
+        delete merged["diskCard"];
+        if (spec.preflight) {
+          try {
+            const pre = await spec.preflight(merged);
+            if (pre && pre.ok === false) return result(pre.result.text, pre.result.structured);
+            if (pre && pre.ok === true) merged = pre.params;
+          } catch (err) {
+            return result(
+              `⚠️ بررسی پیش‌نیاز ناموفق بود؛ هیچ تأییدی ساخته نشد: ${(err as Error).message}`,
+              { ok: false, code: "PREFLIGHT_FAILED" },
+            );
+          }
+        }
 
         if (kind === 'liara_create_app') merged = { ...merged, quote: await quoteCreate(merged) };
 

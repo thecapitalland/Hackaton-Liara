@@ -62,12 +62,12 @@
 | بررسی | نتیجه | شاهد |
 |---|---|---|
 | `npm run typecheck` | **PASS** | `tsc -p tsconfig.json --noEmit` |
-| `npm test` | **PASS — 142/142** | 0 failed · شامل summary-memory، owned apps، projectPath، سقف بایتی، رد crash_loop و هم‌خوانی `docs/TOOLS.md` |
+| `npm test` | **PASS — 145/145** | 0 failed · شامل summary-memory، owned apps، projectPath، سقف بایتی، رد crash_loop، هم‌خوانی `docs/TOOLS.md` و mount دیسک از CLI |
 | `npm run build` | **PASS** | `dist` بازسازی شد |
 | `npm run smoke -- --offline` | **PASS** | stdio handshake واقعی، کشف **۳۴ ابزار**، ping |
 | `npm run smoke` | **خواندن لیارا PASS؛ GapGPT در این فرآیند FAIL** | list و HTTP probe قبل از شکست PASS شدند. `dns.lookup` همین فرآیند برای `api.gapgpt.app` هنوز loopback است و IP دستی اضافه نشد. curl همان نام میزبان با resolver سیستم HTTP 200 داد |
 | `npm run demo:test` | **PASS — 8/8** | health، slow، error500، leak، POST ادمین، رد query string |
-| `npm run secret-scan` | **PASS** | **۱۰۴ فایل** قابل commit؛ کلید تنظیم‌شده/private-key marker یافت نشد (detector عمومی نیست) |
+| `npm run secret-scan` | **PASS** | **۱۰۶ فایل** قابل commit؛ کلید تنظیم‌شده/private-key marker یافت نشد (detector عمومی نیست) |
 | `node dist/index.js --help` | **PASS** | command/args/cwd، متغیرها و خلاصهٔ اقدام قابل‌بازگشت |
 | `git diff --check` | **PASS** | فقط هشدارهای line-ending ویندوز |
 
@@ -310,7 +310,7 @@ node --env-file=.env demo-site/server.mjs
 
 `deploy_project`، `liara_deploy` و اصلاح کد در `apply_fix` پارامتر `projectPath` می‌گیرند و باید مسیر مطلق باشد. مسیر نسبی و `.` رد می‌شوند. بسته‌بندی همان فیلتر قبلی است: `.env`، `.git`، `node_modules` و `.agate` داخل بسته نمی‌روند. `liara.json` پروژه برای `platform` (`node`، `docker`، `python`، `static`)، `port` و `disks` خوانده می‌شود. پلتفرم‌های `next` و `react` و بقیه در enum ساخت اپ لیارا نیستند؛ در آن صورت تشخیص از فایل‌ها انجام می‌شود و در گزارش گفته می‌شود.
 
-`disks` در `liara.json` آرایهٔ `{ "name", "mountTo" }` است. مستندات لیارا می‌گوید CLI هنگام `liara deploy` همان دیسک را وصل می‌کند. در OpenAPI رسمی (`paas.yaml`) ساخت دیسک `POST /v1/projects/{name}/disks` با بدنهٔ `{ name, size }` است و فهرست دیسک‌ها `GET /v1/projects/{id}/disks` است. مسیر جداگانه‌ای برای mount پیدا نشد. بدنهٔ release که این MCP می‌فرستد `sourceID`، `port`، `type`، `message` و `build` است و فیلد `disks` ندارد. mount حدس زده نمی‌شود. `liara_create_disk` ریسک `high` است و قبل از تأیید quote می‌سازد. در ۲۰۲۶-۱۰-۲۳ کلید `diskPrice`، `pricePerGB`، `diskMonthly` یا `disk_price` در `GET /v1/me` نبود، پس قیمت `null` ماند و عددی حدس زده نشد.
+`disks` در `liara.json` طبق `@liara/cli@9.6.0` آرایهٔ `{ "name", "mountTo" }` است (`package/lib/types/disk.d.ts`). همان CLI در `package/lib/commands/deploy.js:264` و `:553-558` این آرایه را داخل `POST /v2/projects/{name}/releases` می‌فرستد. OpenAPI مسیر جداگانه‌ای برای mount ندارد. اگر نام دیسک در `GET /v1/projects/{name}/disks` نباشد، ساخت فقط وقتی انجام می‌شود که همان شیء کلید `size` داشته باشد؛ این کلید در نوع CLI نیست و اگر نباشد کارت دستی برمی‌گردد و هیچ POSTی زده نمی‌شود. ساخت همان `POST` دستور `disk:create` است (`package/lib/commands/disk/create.js:20`، بدنهٔ `{ name, size }`). اندازه و `mountTo` روی کارت تأیید دیده می‌شوند و ساخت دیسک ریسک deploy را `high` می‌کند. `liara_create_disk` همچنان ریسک `high` است. در ۲۰۲۶-۱۰-۲۳ کلید `diskPrice`، `pricePerGB`، `diskMonthly` یا `disk_price` در `GET /v1/me` نبود، پس قیمت `null` ماند و عددی حدس زده نشد.
 
 state ممیزی، تأییدها و baselineها در `AGATE_STATE_DIR` می‌ماند. اگر خالی باشد مسیر ثابت `<package>/.agate` است، نه پوشهٔ پروژهٔ در حال deploy.
 
@@ -334,7 +334,7 @@ npm run install:cursor
 | محدودیت | اثر | رفتار جایگزین |
 |---|---|---|
 | rollback endpoint عمومی ندارد | برگشت کد/سورس از API ممکن نیست | `rollback_last_env_change` فقط env را از journal/baseline محلی برمی‌گرداند؛ برای کد، release قبلی را با تأیید تازه دوباره deploy کنید |
-| مسیر mount دیسک در OpenAPI نیست | `liara.json` دیسک را توصیف می‌کند ولی API ساخت release فیلد دیسک ندارد | `liara_create_disk` فقط دیسک را با تأیید می‌سازد؛ اتصال mount را CLI لیارا انجام می‌دهد و این MCP آن را حدس نمی‌زند |
+| مسیر mount دیسک در OpenAPI نیست | mount از endpoint جداگانه‌ای خوانده نمی‌شود | فیلد `disks: [{name, mountTo}]` همان شکل `@liara/cli@9.6.0` در بدنهٔ release است. دیسک غایب فقط با `size` صریح ساخته می‌شود؛ وگرنه کارت دستی و بدون POST |
 | log streaming ندارد | tail زندهٔ لاگ ممکن نیست | polling با بازهٔ محدود و پنجرهٔ ۱۰ دقیقه‌ای |
 | endpoint مستقل plans ندارد | catalog از مسیر استاندارد خوانده نمی‌شود | `GET /v1/me` و `plans.projects` / `projectBundlePlans` |
 | health-check API ندارد | سلامت سرویس از API قابل تأیید نیست | HTTP probe مستقل روی `/` و `/health`؛ بدنهٔ health parse نمی‌شود |

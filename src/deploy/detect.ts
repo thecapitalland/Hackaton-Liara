@@ -10,6 +10,12 @@ export type Platform = "node" | "docker" | "python" | "static" | "unknown";
 export interface DiskMount {
   name: string;
   mountTo: string;
+  /**
+   * فقط وقتی liara.json کلید size دارد.
+   * @liara/cli@9.6.0 package/lib/types/disk.d.ts این فیلد را ندارد؛
+   * نبودش یعنی اندازه حدس زده نمی‌شود.
+   */
+  size?: string;
 }
 
 export interface StackDetection {
@@ -24,7 +30,7 @@ export interface StackDetection {
   exampleEnv: string[];
   /** اسکریپت/دستور اجرا */
   startCommand?: string;
-  /** disks در liara.json. در بدنهٔ release فرستاده نمی‌شود. */
+  /** disks در liara.json. mount در release با {name, mountTo} فرستاده می‌شود. */
   disks?: DiskMount[];
   /** نام فایل Dockerfile اگر پیدا شده باشد. */
   dockerfile?: string;
@@ -223,7 +229,8 @@ function readDiskMounts(liaraJson: Record<string, unknown> | null): DiskMount[] 
     const name = (row as Record<string, unknown>)["name"];
     const mountTo = (row as Record<string, unknown>)["mountTo"];
     if (typeof name === "string" && name.trim() && typeof mountTo === "string" && mountTo.trim()) {
-      out.push({ name: name.trim(), mountTo: mountTo.trim() });
+      const size = readDiskSize((row as Record<string, unknown>)["size"]);
+      out.push(size ? { name: name.trim(), mountTo: mountTo.trim(), size } : { name: name.trim(), mountTo: mountTo.trim() });
     }
   }
   return out;
@@ -242,19 +249,9 @@ export function readProbePaths(root: string): string[] {
   );
 }
 
-/**
- * disks در liara.json هنگام deploy.
- * مستند رسمی: docs.liara.ir/paas/liarajson و disks/route — آرایهٔ {name, mountTo}.
- * OpenAPI ساخت release (Deploy-releases) فقط sourceID، port و type دارد.
- * ساخت دیسک: POST /v1/projects/{name}/disks با {name, size}.
- * مسیر جداگانه‌ای برای mount در paas.yaml پیدا نشد؛ CLI لیارا mountTo را از liara.json می‌خواند.
- */
-export function describeDiskDeploy(disks: DiskMount[]): string {
-  if (!disks.length) return "";
-  return [
-    `liara.json disks: ${disks.map((disk) => `${disk.name} → ${disk.mountTo}`).join("؛ ")}`,
-    "این مسیرها در POST /v2/projects/{name}/releases فرستاده نمی‌شوند. بدنهٔ release شامل sourceID، port، type، message و build است و فیلد disks ندارد.",
-    "ساخت دیسک با liara_create_disk است (POST /v1/projects/{name}/disks، بدنهٔ {name, size}).",
-    "اتصال mountTo را مستندات CLI به liara.json نسبت می‌دهد و در OpenAPI مسیر mount جداگانه‌ای نیست.",
-  ].join("\n");
+/** اندازهٔ اختیاری. الگوی ساخت دیسک CLI رشته است؛ عدد محدود هم پذیرفته می‌شود. مقدار نامعتبر حذف می‌شود. */
+export function readDiskSize(value: unknown): string | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return String(value);
+  if (typeof value === "string" && /^\d+(\.\d+)?$/.test(value.trim())) return value.trim();
+  return undefined;
 }
