@@ -414,6 +414,10 @@ export interface DiagnosisOptions {
   envChangeWindowSec?: number;
   /** برای تست deterministic یا تزریق نتیجهٔ جست‌وجوی env. */
   envChange?: EnvChangeCandidate | null;
+  /** برای تست؛ releaseهای تزریقی به‌جای API لیارا. */
+  releases?: unknown;
+  /** برای تست؛ اگر باشد audit.jsonl خوانده نمی‌شود. */
+  auditEntries?: import("../audit.js").AuditEntry[];
   /** در production پیش‌فرض true است. */
   includeReleaseEnvEvents?: boolean;
   /** برای تست؛ مسیر ذخیرهٔ baseline. */
@@ -980,6 +984,8 @@ async function agenticRemedyContext(app: string, options: DiagnosisOptions): Pro
         includeReleases: options.includeReleaseEnvEvents !== false,
         includeBaseline: false,
         ...(options.stateDir ? { stateDir: options.stateDir } : {}),
+        ...(options.releases !== undefined ? { releases: options.releases } : {}),
+        ...(options.auditEntries ? { auditEntries: options.auditEntries } : {}),
       });
     } catch {
       envChange = null;
@@ -994,6 +1000,7 @@ async function agenticRemedyContext(app: string, options: DiagnosisOptions): Pro
       const info = await findBaselineRollbackInfo(app, incidentAt, {
         includeReleases: options.includeReleaseEnvEvents !== false,
         ...(options.stateDir ? { stateDir: options.stateDir } : {}),
+        ...(options.releases !== undefined ? { releases: options.releases } : {}),
       });
       baselineAt = info?.baselineAt;
       baselineReleaseAt = info?.releaseAt;

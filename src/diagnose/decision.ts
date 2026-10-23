@@ -7,11 +7,11 @@ import { z } from "zod";
 import { config } from "../config.js";
 import type { Hypothesis, RemedyKind } from "../types.js";
 import { detectCauses, DETECTOR_IDS, INJECTION_CONFIDENCE_CAP } from "./detectors.js";
-import { UNSUPPORTED_CONFIDENCE_CAP, contentText, summarizeForModel } from "./agentic.js";
+import { UNSUPPORTED_CONFIDENCE_CAP, contentText, eventLabel, summarizeForModel } from "./agentic.js";
 import type { RemedyOption } from "./llm.js";
 
 const DETECTOR_CRITERIA: Record<string, string> = {
-  memory_leak: "رشد پیوستهٔ حافظه",
+  memory_leak: "حافظه بالا می‌رود یا لاگ heap/leak یا OOM دیده می‌شود، حتی اگر متریک حافظه خالی باشد",
   oom: "تمام‌شدن حافظه یا رویداد OOM",
   http_5xx: "پاسخ ۵xx. تغییر env درست قبل از ۵xx همین علت با rollback است",
   missing_env: "متغیر محیطی لازم موجود نیست",
@@ -73,7 +73,9 @@ export async function decideIncident(args: DecideArgs): Promise<DecisionOutcome>
 
   const jevFailure = await tryJev(args, decisionModel, timeoutMs);
   if (jevFailure.ok) return jevFailure;
-  if (args.loop?.ok && args.loop.hypotheses.length) {
+  const loopId = args.loop?.hypotheses[0]?.id;
+  const loopBlocked = loopId === "crash_loop" && memorySignal(args) && !hasNonOomRestart(args);
+  if (args.loop?.ok && args.loop.hypotheses.length && !loopBlocked) {
     return {
       ok: true,
       layer: "deepseek",
@@ -102,7 +104,7 @@ function empty(layer: DecisionOutcome["layer"], reason: string): DecisionOutcome
 
 async function tryJev(args: DecideArgs, model: string, timeoutMs: number): Promise<DecisionOutcome> {
   if (!model && !args.callJev) return empty("jev", "مدل Jev خالی است.");
-  const body = jevBody(model || "typesafe/jev-1.14", args.summary, args.remedies);
+  const body = jevBody(model || "typesafe/jev-1.14", args.summary, args.remedies, args);
   try {
     const response = await (args.callJev ?? defaultCallJev)(body, timeoutMs);
     const parsed = readJev(response);
@@ -156,6 +158,9 @@ function acceptChoice(
   if (remedyId && !allowed.has(remedyId as RemedyKind)) {
     return empty(layer, `راهکار ${remedyId} خارج از allowlist است.`);
   }
+  if (hypothesisId === "crash_loop" && memorySignal(args) && !hasNonOomRestart(args)) {
+    return empty(layer, "با نشانهٔ OOM یا leak، crash_loop فقط وقتی restart بدون OOM هم باشد مجاز است.");
+  }
   const detected = (args.detect ?? detectCauses)({
     app: "decision",
     logs: args.logs ?? [],
@@ -194,10 +199,38 @@ function acceptChoice(
   };
 }
 
-function jevBody(model: string, summary: string, remedies: RemedyOption[]): Record<string, unknown> {
+function memorySignal(args: DecideArgs): boolean {
+  const blob = [
+    args.summary,
+    ...(args.logs ?? []).map((line) => line.message),
+    ...(args.events ?? []).map((event) => `${event.type} ${event.message}`),
+  ].join("\n");
+  return /heap|\[BUG\]\s*leak|heap out of memory|OOMKilled/i.test(blob);
+}
+
+function hasNonOomRestart(args: DecideArgs): boolean {
+  return (args.events ?? []).some((event) => {
+    const blob = `${event.type} ${event.message}`;
+    return /\brestart\b/i.test(blob) && !/OOMKilled|heap out of memory|out of memory|\boom\b/i.test(blob);
+  });
+}
+
+function jevState(summary: string, args: Pick<DecideArgs, "logs" | "events">): string {
+  const logs = (args.logs ?? [])
+    .map((line) => line.message)
+    .filter((message) => /heap|\[BUG\]\s*leak|heap out of memory|OOMKilled/i.test(message));
+  const labels = (args.events ?? []).map((event) => eventLabel(event));
+  const preface = [
+    logs.length ? `لاگ حافظه: ${logs.join(" | ")}` : "",
+    labels.length ? `برچسب رویداد: ${labels.join(" | ")}` : "",
+  ].filter(Boolean).join("\n");
+  return summarizeForModel(preface ? `${preface}\n${summary}` : summary);
+}
+
+function jevBody(model: string, summary: string, remedies: RemedyOption[], args: Pick<DecideArgs, "logs" | "events">): Record<string, unknown> {
   return {
     model,
-    state: { text: summarizeForModel(summary) },
+    state: { text: jevState(summary, args) },
     questions: {
       hypothesis: {
         type: "choice",

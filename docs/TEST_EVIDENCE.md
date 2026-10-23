@@ -4,7 +4,7 @@
 
 LLM honesty: `llmEnabled` is not switched by a commit. It is true only when `LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL` are all set at runtime. Audit has 11 `diagnose` lines. Seven, from `2026-10-22T17:58:52Z` through `2026-10-22T21:55:39Z`, start with `منبع تحلیل: LLM (gpt-5-mini)` and did call the model. `2026-10-22T17:54:32Z` was HTTP 400 and stayed on rules. Two calls skipped the model because no legal hypothesis existed, including `2026-10-23T06:29:15Z`. The OpenCode ping sample that says `gpt-5-mini` matches pings while that model was configured; it is not the current `.env`. The local `.env` lost `LLM_BASE_URL` and `LLM_API_KEY` on 2026-10-23 after `b7ad2ab` until they were pointed at GapGPT again. No Liara write was part of that check.
 
-Numeric gates after the decision layer: typecheck PASS, `npm test` **123/123**, build PASS, offline and live smoke PASS with `llmEnabled` true, `demo:test` 8/8, secret-scan PASS (88 commit-eligible files). Decision tests cover a valid Jev object, an invalid response, an out-of-allowlist choice, timeout, and the fallback chain. The 2026-10-23 read-only eval is in the README. No Liara write was performed. The table below remains the earlier feature-freeze run.
+Numeric gates after the decision layer: typecheck PASS, `npm test` **125/125**, build PASS, offline and live smoke PASS with `llmEnabled` true, `demo:test` 8/8, secret-scan PASS (88 commit-eligible files). Decision tests cover a valid Jev object, an invalid response, an out-of-allowlist choice, timeout, and the fallback chain. The 2026-10-23 read-only eval is in the README. No Liara write was performed. The table below remains the earlier feature-freeze run.
 
 ## Feature-freeze verification — 2026-10-23
 

@@ -2,9 +2,14 @@
  * لایهٔ تصمیم: Jev، سپس JSON، سپس مدل جایگزین، سپس قواعد.
  */
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { decideIncident } from "../src/diagnose/decision.js";
 import { RESTART_REMEDY } from "../src/diagnose/llm.js";
+import { saveEnvBaseline } from "../src/env-history.js";
+import { runDiagnosis } from "../src/tools/composite.js";
 import type { Hypothesis } from "../src/types.js";
 
 const summary = "صفحه ۵۰۰ است";
@@ -201,4 +206,132 @@ test("متن آرایه‌ای JSON و مدل جایگزین خالی خواند
   assert.deepEqual(seen, ["deepseek-v4.1-flash", "deepseek-v4.1-flash", "gpt-4.1-mini"]);
   assert.equal(result.layer, "fallback");
   assert.equal(result.hypotheses[0]?.id, "http_5xx");
+});
+
+test("شواهد leak با متریک خالی و kill، crash_loop را رد و memory_leak را نگه می‌دارد", async () => {
+  const leakLine = "[BUG] leak active heapMB=48.2 sinkItems=6";
+  const logs = [{ ts: "2026-10-23T11:40:00.000Z", level: "stdout", message: leakLine }];
+  const events = [
+    { ts: "1792746452", type: "kill", message: "kill" },
+    { ts: "1792746452", type: "die", message: "die" },
+    { ts: "1792747802", type: "oom", message: "OOMKilled" },
+  ];
+  const summary = `${"noise ".repeat(400)}\n${leakLine}`;
+  let state = "";
+  let memoryCriteria = "";
+  const rejected = await decideIncident({
+    decisionModel: "typesafe/jev-1.14",
+    primaryModel: "deepseek-v4.1-flash",
+    fallbackModel: "gpt-4.1-mini",
+    summary,
+    remedies: [RESTART_REMEDY],
+    evidenceIds: ["ev_1"],
+    logs,
+    events,
+    memory: null,
+    callJev: async (body) => {
+      const questions = body["questions"] as { hypothesis?: { criteria?: Record<string, string> } };
+      state = String((body["state"] as { text?: string }).text ?? "");
+      memoryCriteria = questions.hypothesis?.criteria?.memory_leak ?? "";
+      return jev("crash_loop");
+    },
+    callModel: async () => jsonChoice("crash_loop"),
+  });
+  assert.equal(memoryCriteria, "حافظه بالا می‌رود یا لاگ heap/leak یا OOM دیده می‌شود، حتی اگر متریک حافظه خالی باشد");
+  assert.match(state, /\[BUG\] leak active heapMB=48\.2/);
+  assert.match(state, /برچسب رویداد: kill\/die \| kill\/die \| OOMKilled/);
+  assert.ok(state.indexOf(leakLine) < 1500);
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.reason ?? "", /crash_loop/);
+
+  const accepted = await decideIncident({
+    decisionModel: "typesafe/jev-1.14",
+    summary,
+    remedies: [RESTART_REMEDY],
+    evidenceIds: ["ev_1"],
+    logs,
+    events,
+    memory: null,
+    callJev: async () => jev("memory_leak"),
+  });
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.layer, "jev");
+  assert.equal(accepted.hypotheses[0]?.id, "memory_leak");
+  assert.equal(accepted.hypotheses[0]?.kind, "observed");
+});
+
+test("baseline سالم و ENV_UPDATE و 5xx فقط rollback را به Jev می‌دهد", async () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "agate-rollback-jev-"));
+  const now = Date.now();
+  try {
+    saveEnvBaseline("agate-liara", [{ key: "FEATURE_FLAG", value: "off" }], {
+      stateDir,
+      at: new Date(now - 4 * 60_000).toISOString(),
+    });
+    let remedyIds: string[] = [];
+    let round = 0;
+    const run = await runDiagnosis("agate-liara", "صفحه خطای سرور می‌دهد", {
+      investigateMode: "agentic",
+      incidentAt: new Date(now).toISOString(),
+      stateDir,
+      captureBaseline: false,
+      auditEntries: [],
+      releases: [{ _id: "rel_env", type: "ENV_UPDATE", createdAt: new Date(now - 2 * 60_000).toISOString() }],
+      logs: [],
+      events: [],
+      cpu: null,
+      memory: null,
+      plan: null,
+      agentic: {
+        seed: false,
+        executeTool: async () => ({
+          summary: "status 500",
+          evidence: {
+            id: "x",
+            source: "probe",
+            observation: "status 500",
+            available: true,
+            collectedAt: new Date(now).toISOString(),
+          },
+          probe: {
+            url: "https://agate-liara.liara.run/",
+            samples: [{ status: 500, latencyMs: 40 }],
+            ok: false,
+            p50: 40,
+          },
+        }),
+        callLlm: async () => {
+          round += 1;
+          if (round === 1) {
+            return {
+              choices: [{
+                message: {
+                  content: null,
+                  tool_calls: [{ id: "p", type: "function", function: { name: "http_probe", arguments: JSON.stringify({ reason: "خطا", path: "/" }) } }],
+                },
+              }],
+            };
+          }
+          return { choices: [{ message: { content: JSON.stringify({ hypotheses: [{ id: "http_5xx", rank: 1, confidence: 0.7, evidenceIds: ["ev_1"] }], remedy: "restart" }) } }] };
+        },
+        callJev: async (body) => {
+          const questions = body["questions"] as { remedy?: { criteria?: Record<string, string> } };
+          remedyIds = Object.keys(questions.remedy?.criteria ?? {});
+          return {
+            answers: {
+              hypothesis: { choice: "http_5xx", probabilities: { http_5xx: 0.9 }, confidence: 0.8 },
+              remedy: { choice: "rollback_last_env_change" },
+            },
+            usage: { cost: 0.00003 },
+          };
+        },
+      },
+    });
+    assert.deepEqual(remedyIds, ["rollback_last_env_change"]);
+    assert.equal(run.rollbackAvailable, true);
+    assert.equal(run.selectedRemedy, "rollback_last_env_change");
+    assert.equal(run.report.investigation?.decisionLayer, "jev");
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
 });

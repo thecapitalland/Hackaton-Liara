@@ -14,7 +14,7 @@ LangGraph خارج از محدودهٔ این ارائه و کار آینده ا
 ## Decision layer · 2026-10-23
 - Parallel tool calls. Each tool summary is at most 1500 characters and passes through `redact.ts`. Budgets: 10 tools, 120 seconds, 20 seconds per model call, separate Liara tool timeout. Step timing is model time versus tool time.
 - After evidence, `LLM_DECISION_MODEL` (`typesafe/jev-1.14`) is called at `{LLM_BASE_URL}/systemone`. Fallback is deepseek JSON with one repair, then `gpt-4.1-mini`, then rules. An empty decision model keeps the previous loop JSON.
-- Read-only eval, no Liara write. Mean 11.3s after model time includes the decision call. slow, error500, and blind were correct on the Jev layer. leak was `crash_loop` because kill/die events were read and memory metrics were empty. Three of four were correct without a rules fallback, so the default stays agentic. The table is in README.
+- Read-only eval, no Liara write. Mean 11.1s. slow, error500, and blind were correct on the Jev layer. leak stayed `crash_loop`: the Liara log API returned no heap/leak/OOM line, and events were kill/die rather than OOMKilled. When those lines are present they stay ahead of the 1500-character cut, and crash_loop is rejected unless a non-OOM restart is also present. error500's allowed remedy was only restart because the demo switch is not a revertable ENV_UPDATE. A healthy baseline followed by ENV_UPDATE and 5xx offers only `rollback_last_env_change`. Three of four were correct without a rules fallback, so the default stays agentic. The table is in README.
 
 ## Feature freeze · 2026-10-23
 - Fail-closed elicitation, watch 5xx/timeout/outage persistence, demo-site POST admin header, injection evidence, log redaction, and a single audit line per tool call.

@@ -62,7 +62,7 @@
 | بررسی | نتیجه | شاهد |
 |---|---|---|
 | `npm run typecheck` | **PASS** | `tsc -p tsconfig.json --noEmit` |
-| `npm test` | **PASS — 123/123** | 0 failed · شامل allowlist، لایهٔ Jev و fallback، سقف اطمینان، مهلت حلقه و توقف watch |
+| `npm test` | **PASS — 125/125** | 0 failed · شامل allowlist، لایهٔ Jev و fallback، سقف اطمینان، مهلت حلقه و توقف watch |
 | `npm run build` | **PASS** | `dist` بازسازی شد |
 | `npm run smoke -- --offline` | **PASS** | stdio handshake واقعی، کشف **۳۳ ابزار**، ping |
 | `npm run smoke` | **PASS** | live list + HTTP probe، فقط read-only |
@@ -250,16 +250,16 @@ Allowlist: `liara_status` بدون کلید env، `liara_logs`، `liara_events`�
 
 ### ارزیابی ۲۰۲۶-۱۰-۲۳
 
-چهار سناریو روی دمو، فقط‌خواندنی، با `deepseek-v4.1-flash` برای بررسی و `typesafe/jev-1.14` برای تصمیم. زمان مدل شامل فراخوانی تصمیم هم هست. میانگین ۱۱٫۳ ثانیه. سه سناریو بدون برگشت به قواعد درست بودند، پس پیش‌فرض `agentic` می‌ماند.
+چهار سناریو روی دمو، فقط‌خواندنی، با `deepseek-v4.1-flash` برای بررسی و `typesafe/jev-1.14` برای تصمیم. زمان مدل شامل فراخوانی تصمیم هم هست. میانگین ۱۱٫۱ ثانیه. سه سناریو بدون برگشت به قواعد درست بودند، پس پیش‌فرض `agentic` می‌ماند.
 
 | سناریو | علت | remedy | نتیجه | لایه | قدم | کل | مدل | ابزار | هزینه |
 |---|---|---|---|---|---|---:|---:|---:|---:|
-| leak | crash_loop | restart | نادرست | jev | 2 | 14.2s | 12.6s | 2.4s | 0.000050 |
-| slow | slow_responses | restart | درست | jev | 2 | 11.3s | 8.9s | 3.3s | 0.000050 |
-| error500 | http_5xx | restart | درست | jev | 2 | 11.9s | 11.3s | 1.6s | 0.000050 |
-| blind | http_5xx | restart | درست | jev | 2 | 7.9s | 7.1s | 1.5s | 0.000050 |
+| leak | crash_loop | restart | نادرست | jev | 2 | 9.4s | 8.1s | 2.1s | 0.000053 |
+| slow | slow_responses | restart | درست | jev | 2 | 11.2s | 7.5s | 4.9s | 0.000054 |
+| error500 | http_5xx | restart | درست | jev | 2 | 16.3s | 16.4s | 1.6s | 0.000053 |
+| blind | http_5xx | restart | درست | jev | 2 | 7.6s | 6.9s | 1.6s | 0.000053 |
 
-leak نادرست ماند: رویدادهای kill/die به crash_loop تعبیر شدند و متریک حافظه خالی بود. blind نام `BUG_MODE` را در گزارش نداشت.
+error500 راهکار `restart` گرفت چون فهرست مجاز همان incident فقط `restart` بود: حالت دمو از پنل ادمین عوض می‌شود و ENV_UPDATE قابل‌بازگشت لیارا نیست. اگر baseline سالم، بعدش ENV_UPDATE و سپس 5xx باشد، فهرست مجاز فقط `rollback_last_env_change` است و Jev همان را انتخاب می‌کند. leak هنوز `crash_loop` است چون API لاگ لیارا خط heap/leak/OOM برنگرداند و رویدادها kill/die بودند، نه OOMKilled. اگر آن خط‌ها در شواهد باشند، قبل از برش ۱۵۰۰ نویسه می‌مانند و crash_loop فقط با restart غیر از OOM مجاز است.
 
 ## ابزارها (۳۳ ابزار)
 

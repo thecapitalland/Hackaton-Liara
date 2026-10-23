@@ -134,10 +134,28 @@ export function renderForModel(value: unknown): string {
   return text.length > 4000 ? `${text.slice(0, 4000)}…` : text;
 }
 
-/** خلاصهٔ کوتاهِ هر ابزار قبل از رفتن به مدل. */
+const MEMORY_SIGNAL = /heap|\[BUG\]\s*leak|heap out of memory|OOMKilled/i;
+
+/** خلاصهٔ کوتاهِ هر ابزار قبل از رفتن به مدل. خطوط حافظه قبل از برش ۱۵۰۰ نویسه می‌مانند. */
 export function summarizeForModel(value: unknown): string {
   const text = renderForModel(value);
-  return text.length > 1500 ? `${text.slice(0, 1500)}…` : text;
+  const lines = text.split("\n");
+  const priority: string[] = [];
+  const rest: string[] = [];
+  for (const line of lines) {
+    if (MEMORY_SIGNAL.test(line)) priority.push(line);
+    else rest.push(line);
+  }
+  const merged = [...priority, ...rest].join("\n");
+  return merged.length > 1500 ? `${merged.slice(0, 1500)}…` : merged;
+}
+
+/** OOMKilled از kill/die عادی جدا برچسب می‌خورد. */
+export function eventLabel(event: { type?: string; message?: string }): string {
+  const blob = `${event.type ?? ""} ${event.message ?? ""}`;
+  if (/OOMKilled|heap out of memory|out of memory|\boom\b/i.test(blob)) return "OOMKilled";
+  if (/\b(kill|die|destroy|stop)\b/i.test(blob)) return "kill/die";
+  return event.type || "event";
 }
 
 export async function investigateAgentic(args: InvestigateArgs): Promise<AgenticInvestigation> {
@@ -422,6 +440,7 @@ async function defaultExecuteTool(app: string, name: string, args: Record<string
       ts: event.ts,
       type: event.type,
       message: event.message,
+      label: eventLabel(event),
     }));
     return packed("ev_events", "events", { events: parsed }, at, { events: parsed });
   }
