@@ -22,10 +22,15 @@ after(async () => {
 });
 
 async function setMode(mode) {
-  const res = await fetch(`${base}/__agate-admin?key=${encodeURIComponent(KEY)}&mode=${mode}`, {
-    redirect: "manual",
+  const res = await fetch(`${base}/__agate-admin`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-admin-key": KEY,
+    },
+    body: JSON.stringify({ mode }),
   });
-  assert.ok(res.status === 302 || res.status === 200, `تغییر حالت ناموفق بود: ${res.status}`);
+  assert.equal(res.status, 200, `تغییر حالت ناموفق بود: ${res.status}`);
 }
 
 describe("Agate Co. — سایت دمو", () => {
@@ -46,8 +51,9 @@ describe("Agate Co. — سایت دمو", () => {
     const html = await res.text();
     assert.match(html, /Agate Co\./);
     assert.match(html, /لیارا/);
-    assert.match(html, /توروب/);
-    assert.match(html, /والکس/);
+    assert.match(html, /خارج از محدودهٔ این ارائه/);
+    assert.match(html, /APPROVAL_POLICY|strict/);
+    assert.doesNotMatch(html, /هر نوشتنی، تأیید انسانی/);
   });
 
   it("حالت slow: پاسخ صفحهٔ اصلی تأخیر دارد", async () => {
@@ -89,16 +95,41 @@ describe("Agate Co. — سایت دمو", () => {
     await setMode("off");
   });
 
-  it("پنل ادمین بدون کلید در دسترس نیست", async () => {
-    const res = await fetch(`${base}/__agate-admin`);
-    assert.equal(res.status, 404);
+  it("query string حالت باگ را عوض نمی‌کند و کلید را در صفحه نمی‌گذارد", async () => {
+    await setMode("off");
+    const res = await fetch(`${base}/__agate-admin?key=${encodeURIComponent(KEY)}&mode=leak`);
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.doesNotMatch(html, new RegExp(KEY.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(html, /x-admin-key/);
+    const health = await (await fetch(`${base}/health`)).json();
+    assert.equal(health.bugMode, "off");
   });
 
-  it("پنل ادمین با کلید درست باز می‌شود", async () => {
-    const res = await fetch(`${base}/__agate-admin?key=${encodeURIComponent(KEY)}`);
+  it("POST بدون کلید یا با کلید اشتباه حالت را عوض نمی‌کند", async () => {
+    await setMode("off");
+    const missing = await fetch(`${base}/__agate-admin`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode: "leak" }),
+    });
+    assert.equal(missing.status, 404);
+    const wrong = await fetch(`${base}/__agate-admin`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-admin-key": `${KEY}-nope` },
+      body: JSON.stringify({ mode: "slow" }),
+    });
+    assert.equal(wrong.status, 404);
+    const health = await (await fetch(`${base}/health`)).json();
+    assert.equal(health.bugMode, "off");
+  });
+
+  it("پنل فرم تغییر حالت را نشان می‌دهد", async () => {
+    const res = await fetch(`${base}/__agate-admin`);
     assert.equal(res.status, 200);
     const html = await res.text();
     assert.match(html, /leak/);
     assert.match(html, /error500/);
+    assert.match(html, /data-mode="slow"/);
   });
 });

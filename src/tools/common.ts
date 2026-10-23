@@ -1,10 +1,14 @@
 /**
  * Agate-Liara — کمک‌کننده‌های مشترک ابزارها.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { maskParams, writeAudit, type AuditApproval } from "../audit.js";
 import { faErrorMessage, LiaraError } from "../liara/client.js";
 import { redact } from '../redact.js';
+
+/** فقط بیرونی‌ترین audited برای هر فراخوانی یک خط ممیزی می‌نویسد. */
+const auditScope = new AsyncLocalStorage<true>();
 
 /** ساخت پاسخ متنی + ساخت‌یافته */
 export function result(
@@ -21,13 +25,25 @@ export function errorResult(message: string, code = "ERROR", structured?: Record
   return { ...result(message, { ok: false, code, ...(structured ?? {}) }), isError: true };
 }
 
-/** اجرای یک ابزار با ثبت ممیزی و مدیریت خطا */
+/** اجرای یک ابزار با ثبت ممیزی و مدیریت خطا. فراخوانی تودرتو خط جدا نمی‌نویسد. */
 export async function audited(
   tool: string,
   app: string | undefined,
   params: Record<string, unknown> | undefined,
   fn: () => Promise<CallToolResult>,
   approval: AuditApproval = "auto",
+): Promise<CallToolResult> {
+  if (auditScope.getStore() === true) return runAudited(tool, app, params, fn, approval, false);
+  return auditScope.run(true, () => runAudited(tool, app, params, fn, approval, true));
+}
+
+async function runAudited(
+  tool: string,
+  app: string | undefined,
+  params: Record<string, unknown> | undefined,
+  fn: () => Promise<CallToolResult>,
+  approval: AuditApproval,
+  record: boolean,
 ): Promise<CallToolResult> {
   const started = Date.now();
   try {
@@ -41,29 +57,33 @@ export async function audited(
       ? (`auto:${autoPolicy}` as AuditApproval)
       : undefined;
     const outcome = code === 'REJECTED' ? 'rejected' : code === 'APPROVAL_REQUIRED' ? 'pending' : res.structuredContent?.approval === 'approved' ? 'approved' : autoOutcome ?? approval;
-    writeAudit({
-      ts: new Date().toISOString(),
-      tool,
-      app,
-      params: maskParams(params),
-      approval: outcome === 'pending' || outcome === 'rejected' ? outcome : failed ? 'error' : outcome,
-      result: outcome === 'rejected' ? 'rejected' : failed ? 'error' : 'ok',
-      durationMs: Date.now() - started,
-      detail: firstText(res),
-    });
+    if (record) {
+      writeAudit({
+        ts: new Date().toISOString(),
+        tool,
+        app,
+        params: maskParams(params),
+        approval: outcome === 'pending' || outcome === 'rejected' ? outcome : failed ? 'error' : outcome,
+        result: outcome === 'rejected' ? 'rejected' : failed ? 'error' : 'ok',
+        durationMs: Date.now() - started,
+        detail: firstText(res),
+      });
+    }
     return res;
   } catch (err) {
     const message = faErrorMessage(err);
-    writeAudit({
-      ts: new Date().toISOString(),
-      tool,
-      app,
-      params: maskParams(params),
-      approval: "error",
-      result: "error",
-      durationMs: Date.now() - started,
-      detail: message,
-    });
+    if (record) {
+      writeAudit({
+        ts: new Date().toISOString(),
+        tool,
+        app,
+        params: maskParams(params),
+        approval: "error",
+        result: "error",
+        durationMs: Date.now() - started,
+        detail: message,
+      });
+    }
     return err instanceof LiaraError
       ? errorResult(message, err.code, { status: err.status ?? null, providerResponse: err.details ?? null })
       : errorResult(message);

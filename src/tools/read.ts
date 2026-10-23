@@ -154,7 +154,7 @@ export function registerReadTools(server: McpServer): void {
     {
       title: "وضعیت اپ لیارا",
       description:
-        "وضعیت کامل یک اپ لیارا: وضعیت سرویس، پلن، مقیاس، تعداد متغیرهای محیطی و دامنه‌های متصل (فقط‌خواندنی).",
+        "وضعیت یک اپ لیارا: سرویس، پلن، مقیاس، نام کلیدهای env (مقدارها ماسک می‌شوند) و دامنه‌ها. diagnose و LLM این فهرست را نمی‌بینند.",
       inputSchema: {
         app: z.string().min(1).describe("نام اپ در لیارا"),
       },

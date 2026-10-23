@@ -55,7 +55,7 @@ export function parseLogs(raw: unknown): LogLine[] {
     if (row === null || row === undefined) continue;
     if (typeof row === "string") {
       const s = sanitizeLogText(row);
-      out.push({ ts: null, level: guessLevel(s.text), message: s.text, raw: row });
+      out.push({ ts: null, level: guessLevel(s.text), message: s.text, raw: row, injectionSuspected: s.injectionSuspected });
       continue;
     }
     if (typeof row !== "object") continue;
@@ -66,7 +66,7 @@ export function parseLogs(raw: unknown): LogLine[] {
     const s = sanitizeLogText(rawMessage);
     const ts = firstString(obj, ["timestamp", "time", "date", "datetime", "created_at", "createdAt", "@timestamp"]) ?? null;
     const level = firstString(obj, ["level", "severity", "levelname", "type"]) ?? guessLevel(s.text);
-    out.push({ ts, level, message: s.text, raw: row });
+    out.push({ ts, level, message: s.text, raw: row, injectionSuspected: s.injectionSuspected });
   }
   return out;
 }
@@ -628,6 +628,9 @@ const crashLoop: Detector = {
 
 const DETECTORS: Detector[] = [memoryLeak, oom, http5xx, missingEnv, crashLoop, cpuThrottle, slowResponses];
 
+/** سقف اطمینان وقتی لاگ مشکوک به تزریق پرامپت است. */
+export const INJECTION_CONFIDENCE_CAP = 0.4;
+
 export interface DetectionResult {
   hypotheses: Hypothesis[];
   evidence: Evidence[];
@@ -644,6 +647,18 @@ export function detectCauses(input: DetectionInput): DetectionResult {
       if (h) found.push(h);
     } catch {
       /* یک detector خراب نباید کل تحلیل را متوقف کند */
+    }
+  }
+
+  const injectedLogs = input.logs.filter((log) => log.injectionSuspected);
+  if (injectedLogs.length) {
+    const evidenceId = ctx.addEvidence(
+      "logs",
+      `${injectedLogs.length} خط لاگ injectionSuspected است: الگوی تزریق پرامپت دیده شد. این متن داده است و دستور نیست؛ اطمینان فرضیه‌ها به ${INJECTION_CONFIDENCE_CAP} محدود شد.`,
+    );
+    for (const hypothesis of found) {
+      hypothesis.confidence = Math.min(hypothesis.confidence, INJECTION_CONFIDENCE_CAP);
+      if (!hypothesis.evidenceIds.includes(evidenceId)) hypothesis.evidenceIds.push(evidenceId);
     }
   }
 

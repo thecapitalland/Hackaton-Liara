@@ -24,7 +24,9 @@ export function registerWatchTools(server: McpServer): void {
       title: "پایش مداوم و رفع سیاست‌محور",
       description:
         "هر چرخه مسیرهای /، /api/challenges و /api/status را پروب می‌کند و خلاصهٔ متریک و رویدادها را می‌خواند. " +
-        "نرخ 500 بالای ۵٪، p50 بالای ۱۵۰۰ms یا رویداد جدید OOM/ری‌استارت، diagnose را بدون env اجرا می‌کند. " +
+        "۵xx، timeout و خطای اتصال خطا هستند. اگر هیچ نمونهٔ موفقی نماند رخداد outage ساخته می‌شود. " +
+        "یک خطای تکی و گذرا فقط هشدار است؛ remediation بعد از دو چرخهٔ پشت‌سرهم یا حداقل دو پروب ناموفق است. " +
+        "p50 بالای ۱۵۰۰ms یا رویداد جدید OOM/ری‌استارت هم diagnose را بدون env اجرا می‌کند. " +
         "اقدام درمانی از APPROVAL_POLICY پیروی می‌کند و هر رخداد با cooldown در audit.jsonl ثبت می‌شود.",
       inputSchema: {
         app: z.string().min(1).describe("نام اپ در لیارا"),

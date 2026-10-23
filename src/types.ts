@@ -66,6 +66,8 @@ export interface LogLine {
   level: string;
   message: string;
   raw?: unknown;
+  /** متن لاگ شبیه دستور تزریق پرامپت بوده و فقط داده است. */
+  injectionSuspected?: boolean;
 }
 
 export interface EventItem {

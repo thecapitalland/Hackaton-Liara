@@ -7,7 +7,7 @@
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { setElicitor } from "./approval.js";
+import { resolveElicitationResponse, setElicitor } from "./approval.js";
 import { config, PACKAGE_ROOT } from "./config.js";
 import { fa } from './i18n/fa.js';
 import { audited, errorResult } from './tools/common.js';
@@ -62,21 +62,11 @@ export function createServer(): McpServer {
       },
     });
 
-    if (res.action === "accept") {
-      const value = (res.content ?? {})["choice"];
-      const chosen = typeof value === "string" ? value : (choices[0]?.value ?? "");
-      if (chosen === "cancel") {
-        return { approved: false, reason: "کاربر عملیات را لغو کرد." };
-      }
-      return { approved: true, choice: chosen };
-    }
-    return {
-      approved: false,
-      reason:
-        res.action === "decline"
-          ? "کاربر درخواست را رد کرد."
-          : "کاربر پنجرهٔ تأیید را بست (لغو).",
-    };
+    return resolveElicitationResponse(
+      res.action,
+      (res.content ?? {})["choice"],
+      choices.map((choice) => choice.value),
+    );
   });
 
   // Wrap all registrations, including composites, for audit/error coverage.

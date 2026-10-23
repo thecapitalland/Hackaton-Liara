@@ -62,7 +62,12 @@ export interface WatchSnapshot {
   routes: WatchRouteResult[];
   totalSamples: number;
   count500: number;
+  /** ۵xx، timeout و خطای اتصال. */
+  errorCount: number;
+  successCount: number;
   rate500Pct: number;
+  /** سهم errorCount از کل تلاش‌های پروب. */
+  errorRatePct: number;
   maxP50: number | null;
   maxP50Path: string | null;
   metrics: WatchMetricsSummary;
@@ -72,7 +77,7 @@ export interface WatchSnapshot {
   limitations: string[];
 }
 
-export type WatchTriggerCode = "error500" | "slow" | "restart";
+export type WatchTriggerCode = "error500" | "slow" | "restart" | "outage";
 
 export interface WatchTrigger {
   code: WatchTriggerCode;
@@ -121,6 +126,8 @@ export interface WatchCheckResult {
   newEvents: EventItem[];
   cooldown: WatchCooldown;
   incident: WatchIncident | null;
+  /** خطای تکی و گذرا؛ رخداد و remediation نمی‌سازد. */
+  warning?: string;
   reportFa: string;
 }
 
@@ -132,6 +139,8 @@ export interface WatchState {
   cooldownUntil?: string;
   lastIncidentId?: string;
   lastFingerprint?: string;
+  /** تعداد خطای پروب در چرخهٔ قبلی؛ برای تشخیص خطای گذرا. */
+  lastProbeErrorCount?: number;
 }
 
 export interface WatchDeps {
@@ -191,6 +200,10 @@ export function loadWatchState(app: string, stateDir = config.stateDir): WatchSt
         typeof parsed.lastIncidentId === "string" ? parsed.lastIncidentId : undefined,
       lastFingerprint:
         typeof parsed.lastFingerprint === "string" ? parsed.lastFingerprint : undefined,
+      lastProbeErrorCount:
+        typeof parsed.lastProbeErrorCount === "number" && Number.isFinite(parsed.lastProbeErrorCount)
+          ? parsed.lastProbeErrorCount
+          : undefined,
     };
   } catch {
     return { app };
@@ -262,27 +275,68 @@ export function routeResult(
   };
 }
 
-/** محاسبهٔ نرخ 500 و بیشترین p50 از نتایج مسیرها. */
+/** محاسبهٔ نرخ خطا (۵xx، timeout، قطع اتصال) و بیشترین p50 از نتایج مسیرها. */
+function isFailedStatus(status: number | null): boolean {
+  if (status === null) return true;
+  return status >= 500 && status <= 599;
+}
+
 export function computeWatchStats(routes: WatchRouteResult[]): Pick<
   WatchSnapshot,
-  "totalSamples" | "count500" | "rate500Pct" | "maxP50" | "maxP50Path"
+  | "totalSamples"
+  | "count500"
+  | "errorCount"
+  | "successCount"
+  | "rate500Pct"
+  | "errorRatePct"
+  | "maxP50"
+  | "maxP50Path"
 > {
   let totalSamples = 0;
   let count500 = 0;
+  let errorCount = 0;
+  let successCount = 0;
+  let unavailableRoutes = 0;
   let maxP50: number | null = null;
   let maxP50Path: string | null = null;
 
   for (const route of routes) {
+    if (!route.available && route.sampleCount === 0) {
+      unavailableRoutes += 1;
+      errorCount += 1;
+    }
     totalSamples += route.sampleCount;
-    count500 += route.statuses.filter((s) => s === 500).length;
+    for (const status of route.statuses) {
+      if (status === 500) count500 += 1;
+      if (isFailedStatus(status)) errorCount += 1;
+      else successCount += 1;
+    }
     if (route.p50 !== null && (maxP50 === null || route.p50 > maxP50)) {
       maxP50 = route.p50;
       maxP50Path = route.path;
     }
   }
 
+  const attempts = totalSamples + unavailableRoutes;
   const rate500Pct = totalSamples > 0 ? (count500 / totalSamples) * 100 : 0;
-  return { totalSamples, count500, rate500Pct, maxP50, maxP50Path };
+  const errorRatePct = attempts > 0 ? (errorCount / attempts) * 100 : 0;
+  return {
+    totalSamples,
+    count500,
+    errorCount,
+    successCount,
+    rate500Pct,
+    errorRatePct,
+    maxP50,
+    maxP50Path,
+  };
+}
+
+/** صفر نمونهٔ موفق، در حالی که حداقل یک پروب تلاش شده است. */
+export function isTotalOutage(snapshot: WatchSnapshot): boolean {
+  if (snapshot.successCount > 0) return false;
+  const unavailable = snapshot.routes.filter((route) => !route.available && route.sampleCount === 0).length;
+  return snapshot.totalSamples + unavailable > 0;
 }
 
 /**
@@ -341,7 +395,8 @@ export function isRestartEvent(event: EventItem): boolean {
 
 /**
  * آستانه‌ها:
- *  - نرخ 500 اکیداً بیشتر از ۵٪
+ *  - نرخ خطای پروب (۵xx، timeout، قطع اتصال) اکیداً بیشتر از ۵٪
+ *  - یا قطعی کامل (هیچ نمونهٔ موفقی) که رخداد outage می‌سازد
  *  - p50 هر مسیر اکیداً بیشتر از ۱۵۰۰ms
  *  - رویداد جدید OOM/restart
  */
@@ -351,10 +406,15 @@ export function detectWatchTriggers(
 ): WatchTrigger[] {
   const triggers: WatchTrigger[] = [];
 
-  if (snapshot.rate500Pct > 5) {
+  if (isTotalOutage(snapshot)) {
+    triggers.push({
+      code: "outage",
+      detail: `همهٔ پروب‌ها ناموفق بودند (نمونهٔ موفق: ۰؛ خطای ۵xx/اتصال/timeout: ${snapshot.errorCount}).`,
+    });
+  } else if (snapshot.errorRatePct > 5) {
     triggers.push({
       code: "error500",
-      detail: `نرخ 500 برابر ${snapshot.rate500Pct.toFixed(1)}٪ است (${snapshot.count500} از ${snapshot.totalSamples}) و از آستانهٔ ۵٪ گذشته است.`,
+      detail: `نرخ خطای پروب برابر ${snapshot.errorRatePct.toFixed(1)}٪ است (${snapshot.errorCount} خطا از جمله ۵xx، قطع اتصال و timeout) و از آستانهٔ ۵٪ گذشته است.`,
     });
   }
 
@@ -589,7 +649,7 @@ function formatWatchReport(result: Omit<WatchCheckResult, "reportFa">): string {
     "",
     "🌐 پروب مسیرها:",
     ...formatRoutes(snapshot.routes),
-    `📊 نرخ 500: ${snapshot.rate500Pct.toFixed(1)}٪ (${snapshot.count500}/${snapshot.totalSamples}) | بیشترین p50: ${
+    `📊 نرخ خطا: ${snapshot.errorRatePct.toFixed(1)}٪ (${snapshot.errorCount} خطا، ${snapshot.count500} مورد 500، ${snapshot.successCount} موفق) | بیشترین p50: ${
       snapshot.maxP50 === null ? "—" : `${Math.round(snapshot.maxP50)}ms (${snapshot.maxP50Path})`
     }`,
     snapshot.metrics.available
@@ -604,8 +664,12 @@ function formatWatchReport(result: Omit<WatchCheckResult, "reportFa">): string {
     lines.push(`⚠️ محدودیت‌ها: ${snapshot.limitations.join("؛ ")}`);
   }
 
+  if (result.warning) {
+    lines.push("", `⚠️ ${result.warning}`);
+  }
+
   if (!triggers.length) {
-    lines.push("", "✅ وضعیت در محدودهٔ آستانه‌هاست؛ رخدادی ثبت نشد.");
+    if (!result.warning) lines.push("", "✅ وضعیت در محدودهٔ آستانه‌هاست؛ رخدادی ثبت نشد.");
     return lines.join("\n");
   }
 
@@ -741,7 +805,25 @@ export async function runWatchCheck(options: WatchOptions): Promise<WatchCheckRe
     limitations,
   };
 
-  const triggers = detectWatchTriggers(snapshot, newEvents);
+  const detected = detectWatchTriggers(snapshot, newEvents);
+  const previousProbeErrors = state.lastProbeErrorCount ?? 0;
+  /*
+   * یک ۵xx/timeout/قطع اتصالِ تکی در چرخهٔ سالمِ قبلی فقط هشدار است.
+   * remediation وقتی مجاز است که حداقل دو پروب fail شده باشند،
+   * قطعی کامل (outage) باشد، یا همین خطا در دو چرخهٔ پشت‌سرهم دیده شود.
+   */
+  const singleTransient =
+    !isTotalOutage(snapshot) &&
+    snapshot.errorCount === 1 &&
+    snapshot.successCount > 0 &&
+    previousProbeErrors === 0;
+  const warning = singleTransient
+    ? "یک خطای گذرای پروب (۵xx، timeout یا قطع اتصال) دیده شد. چون فقط یک نمونه ناموفق است و چرخهٔ قبل سالم بود، اقدامی انجام نشد."
+    : undefined;
+  const triggers = singleTransient
+    ? detected.filter((trigger) => trigger.code !== "error500" && trigger.code !== "outage")
+    : detected;
+  state.lastProbeErrorCount = snapshot.errorCount;
 
   /*
    * چرخهٔ سالم = snapshot کامل env برای rollback آینده. در تست‌های
@@ -881,6 +963,7 @@ export async function runWatchCheck(options: WatchOptions): Promise<WatchCheckRe
     newEvents,
     cooldown,
     incident,
+    ...(warning ? { warning } : {}),
   };
 
   return { ...base, reportFa: formatWatchReport(base) };

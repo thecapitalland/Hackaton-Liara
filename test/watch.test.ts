@@ -127,7 +127,15 @@ test("نرخ 500 و p50 فقط بالای آستانه‌ها هشدار می‌
   ]);
   assert.ok(Math.abs(atThreshold.rate500Pct - 100 / 3) < 1e-9);
   const noFalsePositive = detectWatchTriggers(
-    { ...atThreshold, rate500Pct: 5, totalSamples: 20, count500: 1 },
+    {
+      ...atThreshold,
+      rate500Pct: 5,
+      errorRatePct: 5,
+      totalSamples: 20,
+      count500: 1,
+      errorCount: 1,
+      successCount: 19,
+    },
     [],
   );
   assert.equal(noFalsePositive.length, 0);
@@ -491,6 +499,90 @@ test("اقدام rollback ریسک medium دارد: strict و balanced هر دو
   });
   assert.equal(setEnv.risk, "medium");
   assert.equal(setEnv.requiresApproval, true);
+});
+
+test("503 و timeout خطای پروب هستند و قطعی کامل outage می‌سازد", async () => {
+  const unavailable = snapshot([
+    routeResult("/", probe([503, 503, 200], 80)),
+    routeResult("/api/challenges", probe([200, 200, 200], 80)),
+    routeResult("/api/status", probe([200, 200, 200], 80)),
+  ]);
+  assert.equal(unavailable.count500, 0);
+  assert.equal(unavailable.errorCount, 2);
+  assert.equal(unavailable.successCount, 7);
+  assert.deepEqual(detectWatchTriggers(unavailable, []).map((trigger) => trigger.code), ["error500"]);
+
+  const timeouts = snapshot([
+    routeResult("/", probe([null, null, null], 80)),
+    routeResult("/api/challenges", probe([200, 200, 200], 80)),
+    routeResult("/api/status", probe([200, 200, 200], 80)),
+  ]);
+  assert.equal(timeouts.errorCount, 3);
+  assert.ok(detectWatchTriggers(timeouts, []).some((trigger) => trigger.code === "error500"));
+
+  const stateDir = mkdtempSync(path.join(tmpdir(), "agate-watch-outage-"));
+  try {
+    let remediateCalls = 0;
+    const outage = await runWatchCheck({
+      app,
+      stateDir,
+      cooldownSec: 60,
+      remediate: true,
+      deps: {
+        now: () => new Date("2026-10-23T12:00:00.000Z"),
+        probeRoute: async () => ({ error: "connect ECONNREFUSED" }),
+        readMetrics: async () => ({ available: false, cpu: null, memory: null }),
+        readEvents: async () => [],
+        diagnose: async () => diagnosis(),
+        remediate: async () => {
+          remediateCalls += 1;
+          return automaticRemediation();
+        },
+        audit: () => undefined,
+      },
+    });
+    assert.equal(outage.snapshot.successCount, 0);
+    assert.deepEqual(outage.triggers.map((trigger) => trigger.code), ["outage"]);
+    assert.ok(outage.incident);
+    assert.equal(remediateCalls, 1);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("یک ۵۰۰ تکی و گذرا فقط هشدار است و در چرخهٔ بعد اقدام می‌شود", async () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "agate-watch-transient-"));
+  try {
+    let now = new Date("2026-10-23T12:00:00.000Z");
+    let remediateCalls = 0;
+    const deps = {
+      now: () => now,
+      probeRoute: async (_target: string, routePath: string) =>
+        routePath === "/" ? probe([500, 200, 200], 100) : probe([200, 200, 200], 100),
+      readMetrics: async () => ({ available: true, cpu: 1, memory: 40 }),
+      readEvents: async () => [],
+      diagnose: async () => diagnosis(),
+      remediate: async () => {
+        remediateCalls += 1;
+        return automaticRemediation();
+      },
+      audit: () => undefined,
+    };
+    const first = await runWatchCheck({ app, stateDir, cooldownSec: 300, deps, remediate: true });
+    assert.equal(first.snapshot.errorCount, 1);
+    assert.equal(first.incident, null);
+    assert.equal(remediateCalls, 0);
+    assert.match(first.warning ?? "", /گذرا/);
+    assert.match(first.reportFa, /اقدامی انجام نشد/);
+
+    now = new Date("2026-10-23T12:01:00.000Z");
+    const second = await runWatchCheck({ app, stateDir, cooldownSec: 300, deps, remediate: true });
+    assert.ok(second.triggers.some((trigger) => trigger.code === "error500"));
+    assert.ok(second.incident);
+    assert.equal(remediateCalls, 1);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
 });
 
 test("نتیجهٔ اقدام در ممیزی: pending، auto:balanced و approved درست نگاشت می‌شوند", () => {

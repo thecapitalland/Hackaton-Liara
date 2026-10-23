@@ -306,11 +306,50 @@ export function consumeApproval(approvalId: string): { ok: true; record: Approva
 /* ───────────────────────── Elicitation ───────────────────────── */
 
 /** تابعی که سرور MCP برای elicitation ثبت می‌کند (در صورت پشتیبانی کلاینت) */
+export interface ElicitationDecision {
+  approved: boolean;
+  choice?: string;
+  reason?: string;
+}
+
+/**
+ * تفسیر پاسخ elicitation. Fail-closed است:
+ * گزینهٔ غایب یا ناشناخته هرگز با choices[0] جایگزین نمی‌شود.
+ * `cancel` حتی اگر در فهرست باشد اجرا نیست.
+ */
+export function resolveElicitationResponse(
+  action: string,
+  choice: unknown,
+  allowed: readonly string[],
+): ElicitationDecision {
+  if (action === "decline") {
+    return { approved: false, reason: "کاربر درخواست را رد کرد." };
+  }
+  if (action !== "accept") {
+    return {
+      approved: false,
+      reason:
+        action === "cancel"
+          ? "کاربر عملیات را لغو کرد."
+          : "کاربر پنجرهٔ تأیید را بست (لغو).",
+    };
+  }
+  const valid =
+    typeof choice === "string" &&
+    choice.length > 0 &&
+    choice !== "cancel" &&
+    allowed.includes(choice);
+  if (!valid) {
+    return { approved: false, reason: "invalid_elicitation_response" };
+  }
+  return { approved: true, choice };
+}
+
 export type Elicitor = (
   summaryFa: string,
   choices: ApprovalChoice[],
   impact: string,
-) => Promise<{ approved: boolean; choice?: string; reason?: string }>;
+) => Promise<ElicitationDecision>;
 
 let elicitor: Elicitor | null = null;
 

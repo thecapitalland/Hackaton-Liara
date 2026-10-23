@@ -5,42 +5,43 @@
 <h1 align="center">Agate-Liara</h1>
 
 <p align="center">
-  دستیار DevOps/SRE فارسی برای لیارا — تشخیص با شواهد، تأیید انسانی، رفع قابل‌بازگشت و verify مستقل.
+  دستیار DevOps/SRE فارسی برای لیارا — تشخیص با شواهد، سیاست تأیید، رفع قابل‌بازگشت و verify مستقل.
 </p>
 
 <p align="center">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white">
   <img alt="Node" src="https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=nodedotjs&logoColor=white">
   <img alt="MCP stdio" src="https://img.shields.io/badge/MCP-stdio-6E56CF">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-94%2F94-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-103%2F103-brightgreen">
   <img alt="Approval policy" src="https://img.shields.io/badge/approval-strict-0B7285">
   <img alt="Liara" src="https://img.shields.io/badge/Liara-PaaS-6C5CE7">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
 
-> **وضعیت زنده · ۲۰۲۶-۱۰-۲۳:** اپ `agate-liara` روی `small-g2` فعال است؛ ۱۰ release آخر `READY` هستند؛ `/` و `/health` هر دو HTTP 200 برمی‌گردانند. اتصال **native MCP** در OpenCode 2.1.2 برقرار و با فراخوانی مستقیم ابزارها اثبات شد. تمرین زندهٔ rollback عمداً به زمان ضبط ویدیو موکول شده و هیچ mutationای در این بررسی انجام نشد.
+## Current Status
 
-## معرفی کوتاه
-
-**Agate-Liara** یک سرور MCP با انتقال `stdio` است که یک ایجنت کدنویس را به لیارا وصل می‌کند: وضعیت اپ، لاگ، متریک، رویداد، release، دامنه و پروب HTTP را می‌خواند؛ رخداد را با شواهد محدود به پنجرهٔ ۱۰ دقیقه‌ای تشخیص می‌دهد؛ و فقط از مسیر تأیید انسانی، اقدام درمانیِ قابل‌بازگشت اجرا می‌کند. سرور بدون دیتابیس، LangGraph یا کنسول مدیریتی است و state حساس را محلی و خارج از ورودی LLM نگه می‌دارد.
-
-سه ویژگی که آن را از «چت‌بات DevOps» جدا می‌کند:
-
-- **تشخیص env-blind:** مقدار env و فهرست کلیدهای env و بدنهٔ `/health` وارد تشخیص یا پرامپت LLM نمی‌شوند.
-- **تأیید مقید به هش:** هر نوشتن از یک نقطهٔ تصمیم‌گیری (`decideApproval`) عبور می‌کند؛ approval به پارامترهای دقیق، ۱۰ دقیقه و یک‌بار مصرف مقید است.
-- **verify قبل از ادعای موفقیت:** بعد از اقدام، پروب و متریک دوباره خوانده می‌شوند؛ نبود شاهد، موفقیت حساب نمی‌شود.
-
-## وضعیت زنده (آخرین مشاهده)
+مرجع وضعیت همین بخش است. مشاهدهٔ ۲۰۲۶-۱۰-۲۳:
 
 | مورد | آخرین مشاهده | یادداشت |
 |---|---|---|
-| اپ `agate-liara` | `ACTIVE` · پلن `small-g2` · scale `1` | بدون custom domain در پاسخ domains؛ دامنهٔ پیش‌فرض `agate-liara.liara.run` مستقل probe شد |
-| Releaseها | ۱۰ مورد آخر: `READY` | جدیدترین در فهرست: `6adaf85c72aa39a87a8c3756` |
-| صفحهٔ اصلی `/` | HTTP 200 · p50 ≈ 782ms | یک نمونهٔ واقعی؛ latency بین اجراها تغییر می‌کند |
-| سلامت `/health` | HTTP 200 · p50 ≈ 607ms | health تنها منبع تشخیص نیست؛ صفحهٔ `/` هم probe می‌شود |
-| env اپ | ۴ کلید | **هیچ مقدار یا نام کلید envی در README/LLM گزارش نمی‌شود** |
-| Native MCP | `✓ agate-liara connected` | OpenCode 2.1.2 · `codemode:false` · ابزارها روی لیست بومی provider |
-| Live rollback drill | **NOT_RUN (تعویق)** | برای ضبط ویدیو نگه داشته شد؛ هیچ restart/rollback/env mutation انجام نشد |
+| اپ `agate-liara` | `ACTIVE` · پلن `small-g2` · scale `1` | شبکهٔ `6ada1e64b3b5ca83e1ee0ce1`؛ دامنهٔ پیش‌فرض `agate-liara.liara.run` |
+| Release این دیپلوی | `6adb239b2c3f63ca360563ab` · `READY` | یک انتشار تأییدشده از `./demo-site`؛ فهرست ده‌تایی قبلی دوباره خوانده نشد |
+| `/` و `/health` | هر دو HTTP 200 | بعد از همین دیپلوی. پروب سلامت ابزار: یک نمونه ۷۹۶ms. `GET /health` مستقل: `status=ok` و `bugMode=off`. SLA نیست |
+| Native MCP | OpenCode 2.1.2 متصل | `codemode:false`؛ فراخوانی مستقیم ابزارها اثبات شد. Cursor / VS Code / Codex هنوز `NOT_RUN` |
+| Live rollback | **NOT_RUN** | برای ضبط ویدیو موکول شده؛ در آن بررسی mutation انجام نشد |
+| تأیید | `APPROVAL_POLICY=strict` پیش‌فرض | همهٔ نوشتن‌ها تأیید می‌خواهند. `balanced` فقط low-risk را خودکار می‌کند. high-risk در هر سیاست تأیید می‌خواهد |
+| `liara_status` | نام کلیدهای env | مقدارها ماسک می‌شوند. `diagnose` و LLM این فهرست را نمی‌بینند |
+| LangGraph | خارج از محدوده | کار آینده است؛ issue بازی برای آن باز نیست |
+
+## معرفی کوتاه
+
+**Agate-Liara** یک سرور MCP با انتقال `stdio` است که یک ایجنت کدنویس را به لیارا وصل می‌کند: وضعیت اپ، لاگ، متریک، رویداد، release، دامنه و پروب HTTP را می‌خواند؛ رخداد را با شواهد محدود به پنجرهٔ ۱۰ دقیقه‌ای تشخیص می‌دهد؛ و اقدام درمانیِ قابل‌بازگشت را فقط طبق `APPROVAL_POLICY` اجرا می‌کند. سرور بدون دیتابیس یا کنسول مدیریتی است. LangGraph خارج از محدودهٔ این ارائه و کار آینده است. state حساس محلی است و وارد ورودی LLM نمی‌شود.
+
+سه ویژگی که آن را از «چت‌بات DevOps» جدا می‌کند:
+
+- **تشخیص env-blind:** مقدار env، فهرست کلیدهای env و بدنهٔ `/health` وارد تشخیص یا پرامپت LLM نمی‌شوند. `liara_status` جداگانه نام کلیدها را نشان می‌دهد و مقدارها را ماسک می‌کند.
+- **تأیید مقید به هش:** هر نوشتن از یک نقطهٔ تصمیم‌گیری (`decideApproval`) عبور می‌کند؛ approval به پارامترهای دقیق، ۱۰ دقیقه و یک‌بار مصرف مقید است.
+- **verify قبل از ادعای موفقیت:** بعد از اقدام، پروب و متریک دوباره خوانده می‌شوند؛ نبود شاهد، موفقیت حساب نمی‌شود.
 
 ## نتایج واقعی تست‌ها
 
@@ -50,8 +51,8 @@
 |---|---|---|
 | **leak** | **PASS** | `npm run demo:test` → حالت leak واقعاً حافظهٔ نگه‌داشته‌شده را بالا می‌برد؛ `npm test` → «تشخیص نشت حافظه با سری صعودی و لاگ heap» |
 | **slow** | **PASS** | `npm run demo:test` → حالت slow پاسخ صفحهٔ اصلی را حدود ۳.۷ ثانیه تأخیر می‌دهد؛ `npm test` → «تشخیص کندی پاسخ وقتی CPU نرمال است» |
-| **blind** | **PASS (unit)** | `BUG_MODE` و مقدار حالت از پرامپت LLM حذف می‌شوند؛ پرامپت فقط اجزای مجاز را دارد؛ `diagnose` مقدار/فهرست env و بدنهٔ `/health` را وارد تشخیص نمی‌کند |
-| **watch** | **PASS (unit) + live read-only** | ۹ نمونه از ۳ مسیر، آستانه‌های ۵٪/۱۵۰۰ms، cooldown و snapshot سالم env تست شده‌اند؛ اجرای تاریخی `npm run watch -- --once` روی اپ واقعی healthy و بدون incident بود |
+| **blind** | **PASS (unit)** | `BUG_MODE` و رازهای رایج لاگ از پرامپت LLM حذف یا ماسک می‌شوند؛ `diagnose` مقدار env، فهرست کلیدها و بدنهٔ `/health` را وارد تشخیص نمی‌کند. `liara_status` نام کلیدها را جداگانه نشان می‌دهد |
+| **watch** | **PASS (unit) + live read-only** | ۹ نمونه از ۳ مسیر؛ ۵xx/timeout/قطع اتصال، outage، خطای تکیِ گذرا، آستانهٔ p50 ۱۵۰۰ms، cooldown و snapshot سالم env تست شده‌اند؛ اجرای تاریخی `npm run watch -- --once` روی اپ واقعی healthy و بدون incident بود |
 | **baseline rollback** | **PASS (unit)** | baseline سالم منبع سوم rollback است؛ diff فقط کلیدهای تغییرکرده را برمی‌گرداند؛ فایل در سیستم‌های پشتیبان‌شده با mode `0600` و بدون ارسال مقدار به LLM ذخیره می‌شود؛ بدون baseline کارت ۳ گزینه‌ای باز می‌شود |
 | **live env rollback** | **NOT_RUN** | عمداً به ضبط ویدیو موکول شد؛ `APPROVAL_POLICY=strict` و هیچ mutationای انجام نشد |
 
@@ -60,12 +61,12 @@
 | بررسی | نتیجه | شاهد |
 |---|---|---|
 | `npm run typecheck` | **PASS** | `tsc -p tsconfig.json --noEmit` |
-| `npm test` | **PASS — 94/94** | 0 failed · ~2.76s · شامل approval، env-history، incident-window، remedy-selection، rollback-plan، watch و server |
+| `npm test` | **PASS — 103/103** | 0 failed · شامل elicitation، watch outage، redaction، audit یک‌خطی، تأیید approved و server |
 | `npm run build` | **PASS** | `dist` بازسازی شد |
 | `npm run smoke -- --offline` | **PASS** | stdio handshake واقعی، کشف **۳۳ ابزار**، ping |
 | `npm run smoke` | **PASS** | live list + HTTP probe، فقط read-only |
-| `npm run demo:test` | **PASS — 7/7** | health، slow، error500، leak، admin auth |
-| `npm run secret-scan` | **PASS** | **۷۹ فایل** قابل commit؛ کلید تنظیم‌شده/private-key marker یافت نشد (detector عمومی نیست) |
+| `npm run demo:test` | **PASS — 8/8** | health، slow، error500، leak، POST ادمین، رد query string |
+| `npm run secret-scan` | **PASS** | **۸۲ فایل** قابل commit؛ کلید تنظیم‌شده/private-key marker یافت نشد (detector عمومی نیست) |
 | `node dist/index.js --help` | **PASS** | command/args/cwd، متغیرها و خلاصهٔ اقدام قابل‌بازگشت |
 | `git diff --check` | **PASS** | فقط هشدارهای line-ending ویندوز |
 
@@ -73,7 +74,7 @@
 
 ### ۱) تشخیص env-blind است
 
-`diagnose` هیچ **مقدار env** و هیچ **فهرست کلید env** را از API نمی‌خواند. ورودی تشخیص فقط این‌هاست:
+`diagnose` هیچ **مقدار env** و هیچ **فهرست کلید env** را از API نمی‌خواند. `liara_status` نام کلیدها را در خروجی خودش نشان می‌دهد و مقدارها را ماسک می‌کند؛ آن فهرست به diagnose یا LLM داده نمی‌شود. ورودی تشخیص فقط این‌هاست:
 
 - لاگ‌ها و رویدادهای پنجرهٔ ۱۰ دقیقه‌ای حول `incidentAt`
 - متریک CPU/حافظه (خام و بدون حدس واحد)
@@ -241,7 +242,7 @@ flowchart LR
 
 1. `/`، `/api/challenges` و `/api/status` را هر کدام سه بار probe می‌کنند (۹ نمونه).
 2. خلاصهٔ متریک و رویدادها را می‌خوانند.
-3. اگر نرخ 500 اکیداً بالای ۵٪، p50 یک مسیر بالای ۱۵۰۰ms، یا رویداد **جدید** OOM/ری‌استارت/کرش دیده شود، `diagnose` را با **همان ۹ نمونه و همان رویدادهای چرخه** اجرا می‌کنند.
+3. ۵xx، timeout و خطای اتصال خطا هستند. اگر هیچ نمونهٔ موفقی نماند رخداد `outage` ساخته می‌شود. یک خطای تکی در چرخهٔ سالم قبلی فقط هشدار است و remediation نمی‌شود؛ اقدام بعد از دو چرخهٔ پشت‌سرهم یا حداقل دو پروب ناموفق است. p50 بالای ۱۵۰۰ms یا رویداد **جدید** OOM/ری‌استارت/کرش هم `diagnose` را با **همان نمونه‌ها و رویدادهای چرخه** اجرا می‌کند.
 4. رخداد را در `.agate/audit.jsonl` با `tool: "watch_incident"` ثبت می‌کنند.
 5. تا `WATCH_COOLDOWN_SEC` (پیش‌فرض ۳۰۰) از تکرار همان هشدار جلوگیری می‌کنند.
 
@@ -261,7 +262,7 @@ npm run watch -- --app agate-liara
 node --env-file=.env demo-site/server.mjs
 ```
 
-صفحهٔ اصلی: `http://localhost:3000/` · پنل آزمایش: `/__agate-admin?key=<ADMIN_KEY>` · سلامت: `/health`.
+صفحهٔ اصلی: `http://localhost:3000/` · پنل آزمایش: `GET /__agate-admin` · تغییر حالت فقط با `POST` و هدر `X-Admin-Key` · سلامت: `/health`. توروب و والکس خارج از محدودهٔ این ارائه هستند.
 
 سه حالت خراب‌سازی عمدی: افزایش Buffer حدود ۵MB/ثانیه، تأخیر ۲–۴ ثانیه و خطای واقعی `TypeError`. Buffer بیرون heap است؛ `extMB` و `rssMB` هم گزارش می‌شوند. این اپ فقط برای محیط دورریختنی است؛ حالت leak را بی‌مراقبت رها نکنید. برای انتشار، ایجنت را به `deploy_project(path="./demo-site", app="agate-liara")` هدایت کنید؛ **ریشهٔ MCP را به‌عنوان وب‌سایت دیپلوی نکنید**.
 

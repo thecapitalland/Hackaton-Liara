@@ -1,10 +1,12 @@
 # Agate Co. / Agate-Liara
 
-Source: owner's IMPLEMENTATION_PROMPT and explicit visual choice in this session.
+مرجع وضعیت زنده: بخش **Current Status** در [`README.md`](README.md).
 
-- Audience: Persian-speaking hackathon reviewers and a builder using an IDE agent.
-- Goal: demonstrate real Liara deploy → evidence-backed diagnosis → human approval → repair → verification.
-- Demo landing is Persian RTL; Liara is implemented locally; Torob and Wallex are static challenge introductions only.
-- Owner-pinned direction: dark, technical, aligned with Liara's DevOps/SRE context, high-contrast readable text and data for recording.
-- No web control console, DB/disk tools, LangGraph/LangChain, trading logic, delete-app tool, multi-model routing, or unapproved provider writes.
-- Live connectivity/deployment is unverified until token, preflight, and approval are available.
+- مخاطب: داوران فارسی‌زبان هکاتون و سازنده‌ای که از ایجنت IDE استفاده می‌کند.
+- هدف: استقرار واقعی روی لیارا، تشخیص مبتنی بر شاهد، اقدام طبق `APPROVAL_POLICY`، و verify مستقل.
+- سیاست پیش‌فرض `strict` است: همهٔ نوشتن‌ها تأیید می‌خواهند. `balanced` فقط اقدام low-risk را خودکار می‌کند. اقدام high-risk در هر سیاست تأیید انسانی می‌خواهد.
+- صفحهٔ دمو فارسی و راست‌به‌چپ است و فقط چالش لیارا را پیاده‌سازی می‌کند. توروب و والکس خارج از محدودهٔ این ارائه هستند.
+- جهت بصری: تیره، فنی، هم‌راستا با زمینهٔ DevOps/SRE لیارا، با متن و دادهٔ خوانا برای ضبط.
+- LangGraph و LangChain خارج از محدوده و کار آینده‌اند. کنسول وب مدیریتی، ابزار دیتابیس/دیسک، منطق ترید، حذف اپ، مسیریابی چندمدلی و نوشتن تأییدنشده روی پروایدر در این ارائه نیستند.
+- اپ `agate-liara` در ۲۰۲۶-۱۰-۲۳ با وضعیت `ACTIVE` و پلن `small-g2` است. انتشار تأییدشدهٔ `6adb239b2c3f63ca360563ab` به `READY` رسید و `/` و `/health` هر دو HTTP 200 بودند. تمرین زندهٔ rollback هنوز `NOT_RUN` است.
+- `liara_status` نام کلیدهای env را نشان می‌دهد و مقدارها را ماسک می‌کند. `diagnose` و LLM آن فهرست را نمی‌بینند.

@@ -61,9 +61,9 @@ Second approved create (`ir-small/default`, without network) returned `network_i
 
 Approved network creation succeeded: response `{network:{_id}}`; reconciliation GET returned `{networks:[{_id,name,createdAt,projectCount,databaseCount}]}`. Subsequent separately-approved app create with that network and `ir-small/default` failed with `"bundlePlanID" must be one of [free, basic, standard, pro]`. This conflicts with the live legacy bundle listing `g1.default`; no alternative bundle is silently selected. An `ir-small/basic` retry failed with `g1_plan_unavailable`.
 
-**Successful live create (15:38 UTC):** exact body `{name:"agate-liara",planID:"small-g2",bundlePlanID:"basic",platform:"node",network:"6ada1e64b3b5ca83e1ee0ce1"}` → `200 {"projectID":"6ada2dd838253e6cdf2b836e"}`. Reconciliation `GET /v1/projects` returned one app with `status ACTIVE`, `planID small-g2`, `bundlePlanID basic`, that network, and `isDeployed:false`. The earlier g2 failure had been sent without a network; `network` and `bundlePlanID` are both required by the live API for this team. This does not prove upload/release success or service health.
+**Successful live create (15:38 UTC):** exact body `{name:"agate-liara",planID:"small-g2",bundlePlanID:"basic",platform:"node",network:"6ada1e64b3b5ca83e1ee0ce1"}` → `200 {"projectID":"6ada2dd838253e6cdf2b836e"}`. Reconciliation `GET /v1/projects` returned one app with `status ACTIVE`, `planID small-g2`, `bundlePlanID basic`, and that network. A release did not exist yet, so this observation does not prove upload/release success. The earlier g2 failure had been sent without a network; `network` and `bundlePlanID` are both required by the live API for this team. Current health is in README Current Status.
 
-Public health request failed with Node DNS `ENOTFOUND agate-liara.liara.run` (no HTTP response), before any release existed. No network workaround applied, as instructed by the owner. This result is historical; re-tested after deployment on 2026-10-23 (see below).
+Before any release existed, the public hostname did not resolve and there was no HTTP response. No network workaround was applied. That result is closed; `/health` was re-tested after deployment on 2026-10-23 (see README Current Status).
 
 ### Live update · 2026-10-23
 

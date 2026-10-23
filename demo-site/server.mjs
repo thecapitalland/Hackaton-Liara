@@ -11,6 +11,7 @@
  *   error500  — استثنای واقعی در / و /api/challenges (ولی /health سالم می‌ماند)
  */
 import http from "node:http";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,28 +29,8 @@ const CHALLENGES = [
     accent: "cyan",
     tag: "پیاده‌سازی‌شده",
     description:
-      "استقرار واقعی روی لیارا، جمع‌آوری لاگ و متریک، رتبه‌بندی علت رخداد، پیشنهاد راهکار و تأیید انسانی پیش از هر تغییر.",
-    points: ["دیپلوی از صفر", "تشخیص ریشه‌ای", "تأیید اجباری", "تأیید پس از اصلاح"],
-  },
-  {
-    id: "torob",
-    title: "توروب",
-    subtitle: "معرفی چالش بازارگاه ایران",
-    accent: "amber",
-    tag: "محتوای نمایشی",
-    description:
-      "کارت معرفی چالش توروب. طبق قواعد مسابقه، منطق تجاری این چالش پیاده‌سازی نشده و فقط محتوای معرفی در سایت نمایش داده می‌شود.",
-    points: ["معرفی چالش", "بدون منطق تجاری", "محتوای ایستا"],
-  },
-  {
-    id: "wallex",
-    title: "والکس",
-    subtitle: "معرفی چالش کیف پول دیجیتال",
-    accent: "emerald",
-    tag: "محتوای نمایشی",
-    description:
-      "کارت معرفی چالش والکس. طبق قواعد مسابقه، هیچ قابلیت ترید یا کیف پولی پیاده‌سازی نشده و فقط محتوای معرفی نمایش داده می‌شود.",
-    points: ["معرفی چالش", "بدون قابلیت ترید", "محتوای ایستا"],
+      "استقرار واقعی روی لیارا، جمع‌آوری لاگ و متریک، رتبه‌بندی علت رخداد و اقدام طبق APPROVAL_POLICY.",
+    points: ["دیپلوی از صفر", "تشخیص ریشه‌ای", "سیاست تأیید", "تأیید پس از اصلاح"],
   },
 ];
 
@@ -102,7 +83,7 @@ function escapeHtml(value) {
 function buildChallengeCards() {
   const cards = CHALLENGES.slice();
   if (state.bugMode === "error500") {
-    cards[1] = undefined;
+    cards.push(undefined);
   }
   return cards
     .map((c) => {
@@ -176,24 +157,16 @@ function sendJson(res, status, data) {
   send(res, status, data);
 }
 
-/** پنل ادمین مخفی: فقط با کلید درست باز می‌شود */
-async function handleAdmin(req, res, url) {
-  const key = url.searchParams.get("key") ?? "";
-  const expected = process.env.ADMIN_KEY;
-  if (!expected || key !== expected) {
-    send(res, 404, "<!doctype html><meta charset='utf-8'><p>404</p>");
-    return;
-  }
+/** مقایسهٔ timing-safe. طول متفاوت با هش ثابت مقایسه می‌شود تا پرتاب exception زمان را لو ندهد. */
+function adminKeyOk(provided) {
+  const expected = process.env.ADMIN_KEY ?? "";
+  if (!expected || !provided) return false;
+  const a = createHash("sha256").update(String(expected)).digest();
+  const b = createHash("sha256").update(String(provided)).digest();
+  return timingSafeEqual(a, b);
+}
 
-  const mode = url.searchParams.get("mode");
-  if (mode && VALID_MODES.includes(mode)) {
-    applyMode(mode);
-    log(`[admin] bug mode → ${mode}`);
-    res.writeHead(302, { Location: `/__agate-admin?key=${encodeURIComponent(key)}` });
-    res.end();
-    return;
-  }
-
+function adminPage() {
   const html = `<!doctype html>
 <html lang="fa" dir="rtl">
 <head>
@@ -206,9 +179,11 @@ async function handleAdmin(req, res, url) {
   <main class="admin__panel">
     <h1>پنل کنترل آزمایش <span class="admin__dot"></span></h1>
     <p class="admin__lead">حالت فعال: <strong data-bug-mode>${escapeHtml(state.bugMode)}</strong></p>
+    <label class="admin__lead" for="admin-key">کلید ادمین (فقط در هدر فرستاده می‌شود)</label>
+    <input id="admin-key" class="admin__key" type="password" autocomplete="off" spellcheck="false">
     <div class="admin__grid">
       ${VALID_MODES.map(
-        (m) => `<a class="admin__btn admin__btn--${m}${m === state.bugMode ? " is-active" : ""}" href="/__agate-admin?key=${encodeURIComponent(key)}&mode=${m}">${m}</a>`,
+        (m) => `<button type="button" class="admin__btn admin__btn--${m}${m === state.bugMode ? " is-active" : ""}" data-mode="${m}">${m}</button>`,
       ).join("")}
     </div>
     <pre class="admin__log">${escapeHtml(
@@ -232,10 +207,55 @@ async function handleAdmin(req, res, url) {
         document.querySelector('[data-bug-mode]').textContent = d.bugMode;
       } catch {}
     }, 3000);
+    document.querySelectorAll("[data-mode]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const key = document.getElementById("admin-key").value;
+        const res = await fetch("/__agate-admin", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-admin-key": key },
+          body: JSON.stringify({ mode: button.getAttribute("data-mode") }),
+        });
+        if (res.ok) location.reload();
+      });
+    });
   </script>
 </body>
 </html>`;
-  send(res, 200, html);
+  return html;
+}
+
+async function readJsonLimited(req) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > 4096) return null;
+    chunks.push(chunk);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** تغییر BUG_MODE فقط با POST و هدر X-Admin-Key. query string نادیده گرفته می‌شود. */
+async function handleAdminPost(req, res) {
+  const provided = req.headers["x-admin-key"];
+  const key = Array.isArray(provided) ? provided[0] : provided;
+  if (!adminKeyOk(key)) {
+    send(res, 404, "<!doctype html><meta charset='utf-8'><p>404</p>");
+    return;
+  }
+  const body = await readJsonLimited(req);
+  const mode = body && typeof body.mode === "string" ? body.mode : "";
+  if (!VALID_MODES.includes(mode)) {
+    sendJson(res, 400, { ok: false, error: "mode" });
+    return;
+  }
+  applyMode(mode);
+  log(`[admin] bug mode → ${mode}`);
+  sendJson(res, 200, { ok: true, bugMode: state.bugMode });
 }
 
 function applyMode(mode) {
@@ -266,7 +286,7 @@ async function handleHome(req, res) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agate Co. — دستیار DevOps و SRE برای لیارا</title>
-<meta name="description" content="Agate Co. — عامل DevOps و SRE مبتنی بر MCP برای لیارا: استقرار، تشخیص رخداد، راهکار با تأیید انسانی و تأیید پس از اصلاح.">
+<meta name="description" content="Agate Co. — عامل DevOps و SRE مبتنی بر MCP برای لیارا: استقرار، تشخیص رخداد و اقدام طبق APPROVAL_POLICY.">
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css">
 <link rel="stylesheet" href="/styles.css">
@@ -301,7 +321,7 @@ async function handleHome(req, res) {
         <p class="eyebrow"><span class="eyebrow__tag">Starcoach Agentic AI Hackathon</span> چالش لیارا</p>
         <h1 class="hero__title">عامل DevOps و SRE<br><span class="grad">برای لیارا</span></h1>
         <p class="hero__lead">
-          از یک درخواست ساده تا استقرار واقعی، تحلیل ریشه‌ای رخداد، پیشنهاد راهکار با <strong>تأیید اجباری انسان</strong>
+          از یک درخواست ساده تا استقرار واقعی، تحلیل ریشه‌ای رخداد، اقدام طبق <strong>APPROVAL_POLICY</strong>
           و در نهایت اثبات اینکه مشکل واقعاً برطرف شده است.
         </p>
         <div class="hero__actions">
@@ -311,7 +331,7 @@ async function handleHome(req, res) {
         <dl class="facts">
           <div><dt>ابزارهای MCP</dt><dd>خواندن، تأیید و اجرا</dd></div>
           <div><dt>رتبه‌بندی علت</dt><dd>۳ علت با شواهد</dd></div>
-          <div><dt>دروازهٔ تأیید</dt><dd>هر نوشتنی، تأیید انسانی</dd></div>
+          <div><dt>دروازهٔ تأیید</dt><dd>strict پیش‌فرض؛ high همیشه تأیید</dd></div>
         </dl>
       </div>
 
@@ -337,7 +357,7 @@ async function handleHome(req, res) {
         <li class="step"><span class="step__n">۱</span><h3>تشخیص</h3><p>استک پروژه، پورت و متغیرهای لازم تشخیص داده می‌شود.</p><code class="step__cmd">detect_stack()</code></li>
         <li class="step"><span class="step__n">۲</span><h3>استقرار</h3><p>بسته‌بندی امن، آپلود، انتشار و پیگیری بیلد تا آدرس زنده.</p><code class="step__cmd">deploy_project()</code></li>
         <li class="step"><span class="step__n">۳</span><h3>تحلیل رخداد</h3><p>لاگ، متریک، رویداد و پروب؛ سپس ۳ علت رتبه‌بندی‌شده با شواهد.</p><code class="step__cmd">diagnose()</code></li>
-        <li class="step"><span class="step__n">۴</span><h3>تأیید و اصلاح</h3><p>راهکار با ریسک و اثر نمایش داده می‌شود؛ تا تأیید شما هیچ تغییری اعمال نمی‌شود.</p><code class="step__cmd">apply_fix()</code></li>
+        <li class="step"><span class="step__n">۴</span><h3>تأیید و اصلاح</h3><p>سیاست پیش‌فرض strict است: همهٔ نوشتن‌ها تأیید می‌خواهند. balanced فقط اقدام low-risk را خودکار می‌کند. اقدام high-risk در هر سیاست تأیید انسانی می‌خواهد.</p><code class="step__cmd">apply_fix()</code></li>
         <li class="step"><span class="step__n">۵</span><h3>اثبات اصلاح</h3><p>مقایسهٔ قبل/بعد و تکرار پروب؛ نتیجه تأیید یا رد می‌شود.</p><code class="step__cmd">verify_fix()</code></li>
       </ol>
     </div>
@@ -345,8 +365,8 @@ async function handleHome(req, res) {
 
   <section class="section section--alt" id="challenges">
     <div class="wrap">
-      <h2 class="section__title">سه چالش هکاتون</h2>
-      <p class="section__lead">این سایت سه چالش را معرفی می‌کند. طبق قواعد مسابقه، فقط چالش لیارا پیاده‌سازی شده و دو چالش دیگر محتوای نمایشی هستند.</p>
+      <h2 class="section__title">چالش این ارائه</h2>
+      <p class="section__lead">فقط چالش لیارا در این ارائه پیاده‌سازی شده است. توروب و والکس خارج از محدودهٔ این ارائه هستند.</p>
       <div class="challenges">${cards}</div>
     </div>
   </section>
@@ -419,7 +439,11 @@ export function createServer() {
       }
 
       if (pathname === "/__agate-admin") {
-        await handleAdmin(req, res, url);
+        if (req.method === "POST") {
+          await handleAdminPost(req, res);
+          return;
+        }
+        send(res, 200, adminPage());
         return;
       }
 

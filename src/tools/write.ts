@@ -790,6 +790,17 @@ export interface GuardedOutcome {
   approvalId?: string;
 }
 
+/** متن و payload رد شدن؛ دلیل در خروجی و در detail ممیزی می‌ماند. */
+export function formatGuardedRejection(
+  summaryFa: string,
+  reason: string,
+): { text: string; structured: Record<string, unknown> } {
+  return {
+    text: `${fa.rejected}\n${reason}\n📌 ${summaryFa}`,
+    structured: { ok: false, code: "REJECTED", reason },
+  };
+}
+
 /**
  * اجرای یک عملیات نوشتنی با دروازهٔ تأیید.
  * - اپ خارج از allowlist → رد بدون هیچ درخواستی.
@@ -860,7 +871,10 @@ export async function runGuardedAction(
             riskLevel: decision.risk,
             approvalNoticeFa: autoNotice,
           }
-        : action.structured;
+        : {
+            ...(action.structured ?? {}),
+            ...(approval === "approved" ? { approval: "approved" } : {}),
+          };
       return result(text, structured);
     }, approval);
     return {
@@ -881,8 +895,9 @@ export async function runGuardedAction(
     });
 
     if (outcome.mode === "rejected") {
+      const formatted = formatGuardedRejection(summaryFa, outcome.reason ?? "کاربر لغو کرد.");
       return {
-        res: result(`${fa.rejected}\n📌 ${summaryFa}`, { ok: false, code: "REJECTED" }),
+        res: result(formatted.text, formatted.structured),
         executed: false,
       };
     }

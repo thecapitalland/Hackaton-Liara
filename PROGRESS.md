@@ -1,5 +1,15 @@
 # Agate-Liara progress
 
+وضعیت زندهٔ فعلی در بخش **Current Status** فایل [`README.md`](README.md) است. یادداشت‌های پایین تاریخچهٔ همان روزها هستند، نه وضعیت باز.
+
+LangGraph خارج از محدودهٔ این ارائه و کار آینده است. در مخزن issue بازی برای آن وجود ندارد.
+
+## Feature freeze · 2026-10-23
+- Fail-closed elicitation, watch 5xx/timeout/outage persistence, demo-site POST admin header, injection evidence, log redaction, and a single audit line per tool call.
+- Human-approved executions now stamp `approval: "approved"` so the one audit line is not recorded as `auto`.
+- Local gates after that fix: typecheck PASS, `npm test` 103/103, build PASS, offline and live smoke PASS, `demo:test` 8/8, secret-scan PASS (82 files, including after the documentation update).
+- One approved deploy of `./demo-site` to `agate-liara`. Approval `9c76b155-dfb2-4ce0-80c6-2fcf9004edd4` was consumed by `execute_action`. Release `6adb239b2c3f63ca360563ab` reached `READY`. Independent `GET /health` returned HTTP 200. No env write.
+
 ## 2026-10-22 — first live deploy preparation
 - Source brief reread: `C:/Users/kavosh/Downloads/IMPLEMENTATION_PROMPT.md`.
 - No previous PROGRESS.md found in this workspace; this is a new continuation record.
@@ -19,8 +29,8 @@
 - Owner explicitly approved a new app-create with this network, `ir-small/default`, platform node. Provider rejected: `"bundlePlanID" must be one of [free, basic, standard, pro]`.
 - Reconciliation GET: projects still `[]`; network exists. The legacy plans response offers only `projectBundlePlans.g1.default`, contradicting write validation; do not guess a different paid bundle or retry automatically.
 - No source upload, release creation, env change, deployment, restart or resize was performed.
-- Direct public GET `https://agate-liara.liara.run/health` failed: `fetch failed`; cause `getaddrinfo ENOTFOUND agate-liara.liara.run`, code `ENOTFOUND`. No HTTP status or health payload received. Network code/system settings untouched.
-- Next gate: obtain an authoritative valid plan/bundle combination for this team (or enabled g2 access), then fresh explicit app-create approval. After app exists, obtain separate upload/release approval and resume deploy_project. Do not claim deployment or health PASS.
+- Before any release existed, the public hostname did not resolve and no HTTP status was received. That observation is closed. Current health is in README Current Status. Network code was not changed.
+- Next gate at that time: obtain a valid plan/bundle, then a fresh app-create approval. This gate was later completed.
 
 ## Retry requested by owner: ir-small/basic
 - Previous provider validation: `"bundlePlanID" must be one of [free, basic, standard, pro]`; `default` is not accepted by POST even though GET lists `g1.default`.
@@ -46,16 +56,16 @@
 - Owner explicitly approved the exact displayed POST body (quote hash `5babbdf17815b314a5690effbaf4442c869b2e12203bbab86831bbd6d255eee8`).
 - First approval record `5a13c217-1370-41e1-9cfe-0ebc86b201f4` was marked rejected by the local CLI because the PowerShell `yes` pipe delivered no usable stdin. No provider request was sent. A new record `53c302a6-3311-4c36-8a6c-6c2f49bc55c3` with the identical hash was approved and used.
 - Exactly one POST `/v1/projects` with `{name:"agate-liara",planID:"small-g2",bundlePlanID:"basic",platform:"node",network:"6ada1e64b3b5ca83e1ee0ce1"}` returned `{"projectID":"6ada2dd838253e6cdf2b836e"}`.
-- Reconciliation GET `/v1/projects` confirms one app: `_id 6ada2dd838253e6cdf2b836e`, `project_id agate-liara`, `type node`, `status ACTIVE`, `scale 1`, `planID small-g2`, `bundlePlanID basic`, network `6ada1e64b3b5ca83e1ee0ce1`, `isDeployed:false`.
+- Reconciliation GET `/v1/projects` confirmed one newly created app: `_id 6ada2dd838253e6cdf2b836e`, `project_id agate-liara`, `type node`, `status ACTIVE`, `scale 1`, `planID small-g2`, `bundlePlanID basic`, network `6ada1e64b3b5ca83e1ee0ce1`. A release did not exist yet.
 - `GET /v1/projects/agate-liara` also returns `dns:[]`, `defaultSubdomain:true`, env keys `PORT`/`NODE_ENV` (values never read/printed), `hourlyPrice 659.72`, `bundleHourlyPrice 381.94`.
-- No upload, release, deployment, env change, restart, scale, domain or SSL mutation was performed. `agate-liara.liara.run` is not expected to serve until a release is deployed.
+- No upload, release, deployment, env change, restart, scale, domain or SSL mutation was performed in that step. Serving began only after a later READY release.
 - Next gate: separate explicit approval for source upload/release of `./demo-site`, then health verification. The app now exists, so retrying create is unnecessary and prohibited.
 
 ## First deployment attempt · 2026-10-22 15:53 UTC
 - Owner approved the combined option: env merge + one upload + one release. Repo pushed to `origin/main` (`422ceee`) after secret-scan PASS; `.env` is untracked and was never committed.
 - Deployment package: 11843 bytes (11.6KB), 5 files (`liara.json`, `package.json`, `public/app.js`, `public/styles.css`, `server.mjs`), SHA-256 `30dab33e…c6ebf2`; `node_modules`, `.env` and `test.mjs` excluded. Demo tests 7/7 PASS locally.
 - Env merge: one approved `POST /v1/projects/update-envs` succeeded; `totalKeys=4` (`PORT`, `NODE_ENV` preserved; `BUG_MODE`, `ADMIN_KEY` added). Values redacted.
-- Deploy approval `b5e115c7-da44-418c-8c76-9cef710eec6e` was consumed once. Source upload succeeded, then `POST /v2/projects/agate-liara/releases` returned **400**: `"build.location" must be one of [iran, germany]`. No `releaseID`, no build logs, no running version; `isDeployed:false`.
+- Deploy approval `b5e115c7-da44-418c-8c76-9cef710eec6e` was consumed once. Source upload succeeded, then `POST /v2/projects/agate-liara/releases` returned **400**: `"build.location" must be one of [iran, germany]`. No `releaseID` and no running version were created by that attempt.
 - Root cause: our release body sent `build.location:"."` (source path) instead of the build region. Fixed locally in `buildReleaseBody`: `location` defaults to `iran` (override `LIARA_BUILD_LOCATION`), validated against `iran|germany`; dockerfile remains docker-only. Typecheck PASS, tests 40/40 PASS.
 - `GET /v2/projects/agate-liara/sources` returns 404, so the uploaded sourceID cannot be recovered; a retry needs one new upload and one new release. No automatic retry was performed.
 - Awaiting fresh approval. No further provider write occurred after the 400.
@@ -63,7 +73,7 @@
 ## Third deployment attempt · 2026-10-22 16:03–16:14 UTC
 - Owner approved one retry after the `build.location` fix; `dist` was rebuilt before execution.
 - Upload succeeded; release `6ada364eb3b5ca83e1f16704` was created with `build.location=iran`.
-- Build started (`npm install` via the Liara mirror) but `waitForRelease` reached its 10-minute timeout without a success state; result `status:"timeout"`, `stage:"build"`, `ok:false`. `isDeployed:false`; no retry was attempted.
+- Build started (`npm install` via the Liara mirror) but `waitForRelease` reached its 10-minute timeout without a success state; result `status:"timeout"`, `stage:"build"`, `ok:false`. No retry was attempted. A later read-only recheck found the same release READY.
 - Build-log tail contained repeated ` ---> Using cache` and `> Running npm install...` lines with no completion. The cause is not yet established; any follow-up must be read-only (release status/build logs).
 - Any further deploy attempt requires a fresh approval box. Expired approvals are never auto-renewed.
 
@@ -101,5 +111,5 @@
 - `rollback_last_env_change` is declared `medium` risk (updated in `e65c087`); it requires approval under both `strict` and `balanced`, and `liara_set_env` remains `medium`. The hidden BUG_MODE exception was removed. A rollback proposal without `incidentAt` is pinned at proposal time so late approval cannot revert a newer change.
 - Diagnosis evidence is anchored to `incidentAt` with a 10-minute default window; old/undated events and old logs are dropped, and crash-loop evidence uses the same window. The watcher now passes the same cycle's 9 probe samples and events into diagnosis, so counts match (e.g. `3/9`).
 - The LLM receives only `restart` plus `rollback_last_env_change` when an exact revertable change exists; invalid selections are ignored and rules fallback applies. Added regression tests for journal/window/audit/release/rollback-plan/prompt/same-cycle behavior.
-- Final local checks: typecheck PASS, tests **94/94**, build PASS, offline smoke PASS (33 tools), live read-only smoke PASS, demo tests 7/7, secret-scan PASS. OpenCode 2.1.2 native MCP is connected with `codemode:false`, and `agate-liara_ping` + `agate-liara_liara_list_apps` were invoked directly from OpenCode's tool list. Live env rollback and live watcher remediation remain **NOT_RUN** and are deferred to video recording; `APPROVAL_POLICY=strict` and no watcher process is running.
+- Local checks for that commit: typecheck PASS, tests 94/94, build PASS, offline smoke PASS (33 tools), live read-only smoke PASS, demo tests 7/7, secret-scan PASS. Those counts are historical. Current gate counts are in the README quality gate. OpenCode 2.1.2 native MCP is connected with `codemode:false`, and `agate-liara_ping` + `agate-liara_liara_list_apps` were invoked directly from OpenCode's tool list. Live env rollback and live watcher remediation remain **NOT_RUN** and are deferred to video recording; `APPROVAL_POLICY=strict` and no watcher process is running.
 - Connection UX: `SERVER_INSTRUCTIONS` and `--help` document the start path and revertable-action summary (rollback is `medium`, not low-risk); startup stderr reports version, allowed app, token state, approval policy, watch settings, and `cwd`/state/package paths. README updated with journal privacy, incident-window, remedy-selection, native OpenCode proof, and IDE connection guidance.
