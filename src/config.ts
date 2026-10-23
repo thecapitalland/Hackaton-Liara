@@ -106,6 +106,15 @@ export const config = {
   get llmEnabled(): boolean {
     return Boolean(str("LLM_BASE_URL") && str("LLM_API_KEY") && str("LLM_MODEL"));
   },
+  /**
+   * حلقهٔ بررسی diagnose.
+   * مقدار صریح agentic|fixed برنده است. در غیر این صورت اگر LLM تنظیم باشد agentic، وگرنه fixed.
+   */
+  get investigateMode(): "agentic" | "fixed" {
+    const raw = str("INVESTIGATE_MODE").toLowerCase();
+    if (raw === "agentic" || raw === "fixed") return raw;
+    return config.llmEnabled ? "agentic" : "fixed";
+  },
   get llmBaseUrl(): string {
     return str("LLM_BASE_URL");
   },

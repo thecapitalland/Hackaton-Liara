@@ -550,6 +550,42 @@ test("503 و timeout خطای پروب هستند و قطعی کامل outage م
   }
 });
 
+test("فرضیهٔ agentic تأییدنشده اقدام watch را اجرا نمی‌کند", async () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "agate-watch-agentic-"));
+  try {
+    let remediateCalls = 0;
+    const unconfirmed = diagnosis();
+    unconfirmed.report.hypotheses[0]!.kind = "inferred";
+    unconfirmed.report.hypotheses[0]!.confidence = 0.35;
+    unconfirmed.report.investigation = {
+      mode: "agentic",
+      steps: [{ tool: "http_probe", reason: "صفحه", summary: "500" }],
+    };
+    const skipped = await runWatchCheck({
+      app,
+      stateDir,
+      cooldownSec: 60,
+      remediate: true,
+      deps: {
+        now: () => new Date("2026-10-23T13:00:00.000Z"),
+        probeRoute: async () => ({ error: "connect ECONNREFUSED" }),
+        readMetrics: async () => ({ available: false, cpu: null, memory: null }),
+        readEvents: async () => [],
+        diagnose: async () => unconfirmed,
+        remediate: async () => {
+          remediateCalls += 1;
+          return automaticRemediation();
+        },
+        audit: () => undefined,
+      },
+    });
+    assert.equal(remediateCalls, 0);
+    assert.match(skipped.incident?.remediationSkippedReason ?? "", /detector/);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 test("یک ۵۰۰ تکی و گذرا فقط هشدار است و در چرخهٔ بعد اقدام می‌شود", async () => {
   const stateDir = mkdtempSync(path.join(tmpdir(), "agate-watch-transient-"));
   try {

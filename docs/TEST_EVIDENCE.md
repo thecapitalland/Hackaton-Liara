@@ -1,8 +1,12 @@
 # Verification evidence · cumulative through 2026-10-23
 
-## Latest full verification — 2026-10-23
+## Agentic investigate — 2026-10-23
 
-Current numeric gates live in the README quality gate and Current Status. This section records the 2026-10-23 run. Earlier sections stay historical. The legacy `BUG_MODE=off` policy exception remains superseded.
+Numeric gates after the read-only investigation loop: typecheck PASS, `npm test` **113/113**, build PASS, offline and live smoke PASS, `demo:test` 8/8, secret-scan PASS (85 commit-eligible files), `git diff --check` exit 0 with Windows line-ending notices only. New unit coverage rejects write tools before execution, caps unsupported and injection confidence, stops the loop at the time budget, keeps unconfirmed agentic hypotheses from automatic watch remediation, and falls back to fixed on invalid JSON, timeout, and tool budget. No Liara write was performed for the model comparison. README quality gate is the reference. The table below remains the earlier feature-freeze run.
+
+## Feature-freeze verification — 2026-10-23
+
+This section records the feature-freeze run on 2026-10-23. Current numeric gates live in the README quality gate. Earlier sections stay historical. The legacy `BUG_MODE=off` policy exception remains superseded.
 
 **Current correction (commit `e65c087`):** `rollback_last_env_change` is `risk=medium` and requires approval under both `strict` and `balanced`. `balanced` auto-runs only `low` actions such as `restart`; it does not auto-run rollback. Earlier sections that describe rollback as `low`/automatic are historical and superseded.
 

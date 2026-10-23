@@ -13,6 +13,7 @@ import { fa } from "../i18n/fa.js";
 import { liaraGet, liaraPost, uploadSource, LiaraError } from "../liara/client.js";
 import { EP } from "../liara/endpoints.js";
 import { unwrapRelease } from "../liara/release.js";
+import { investigateAgentic, type AgenticInvestigation, type AgenticToolResult } from "../diagnose/agentic.js";
 import { detectCauses, parseEvents, parseLogs, parseSeries } from "../diagnose/detectors.js";
 import {
   rankWithLlm,
@@ -52,6 +53,7 @@ import type {
   Evidence,
   Hypothesis,
   IncidentReport,
+  InvestigationTrace,
   LogLine,
   PlanLimits,
   ProbeResult,
@@ -417,6 +419,18 @@ export interface DiagnosisOptions {
   stateDir?: string;
   /** اگر false، LLM حتی با پیکربندی کامل فراخوانی نمی‌شود (تست/آفلاین). */
   llm?: boolean;
+  /** agentic حلقهٔ ابزار می‌زند؛ fixed همان جمع‌آوری و رتبه‌بندی فعلی است. */
+  investigateMode?: "agentic" | "fixed";
+  /** تزریق LLM و ابزار برای تست. در اجراهای واقعی خالی می‌ماند. */
+  agentic?: {
+    model?: string;
+    now?: () => number;
+    limits?: { maxToolCalls?: number; totalMs?: number; llmTimeoutMs?: number };
+    remedies?: RemedyOption[];
+    callLlm?: (body: Record<string, unknown>, timeoutMs: number) => Promise<unknown>;
+    executeTool?: (name: string, args: Record<string, unknown>) => Promise<AgenticToolResult>;
+    detect?: typeof detectCauses;
+  };
   /**
    * ثبت snapshot سالم env در diagnose. پیش‌فرض true است، ولی وقتی envChange
    * تزریق شده باشد (مسیر تست/deterministic) خودکار غیرفعال می‌شود.
@@ -734,6 +748,29 @@ export function remedyLabel(kind: RemedyKind): string {
   }
 }
 
+function oneLine(value: string, max = 48): string {
+  return value.replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+/** ابتدای گزارش، تا در ۴۰۰ نویسهٔ اول ممیزی هم ابزار و دلیل و نتیجه باشد. */
+function investigationLead(report: IncidentReport): string {
+  const trace = report.investigation;
+  const mode = !trace || trace.mode === "fixed" ? "fixed" : `agentic${trace.model ? `(${trace.model})` : ""}`;
+  const fallback = trace?.fallbackReason ? ` بازگشت:${oneLine(trace.fallbackReason, 80)}` : "";
+  let text = `مسیر بررسی: ${mode}.${fallback}`.trim();
+  const steps = trace?.steps ?? [];
+  if (!steps.length) return `${text} قدم:ندارد`;
+  for (const step of steps) {
+    const piece = ` | ${step.tool}؛ دلیل:${oneLine(step.reason)}؛ نتیجه:${oneLine(step.summary)}`;
+    if (text.length + piece.length > 370) {
+      text += " | …";
+      break;
+    }
+    text += piece;
+  }
+  return text;
+}
+
 export function formatIncident(report: IncidentReport, extraNotes: string[] = []): string {
   const lines: string[] = [];
   lines.push(`${fa.diagnoseHeader(report.appId)}`);
@@ -770,6 +807,25 @@ export function formatIncident(report: IncidentReport, extraNotes: string[] = []
   lines.push("🧾 شواهد:");
   for (const e of report.evidence) {
     lines.push(`• [${e.id}] (${e.source}${e.available ? "" : " — ناموجود"}) ${e.observation}`);
+  }
+
+  lines.push("");
+  lines.push("🔎 مسیر بررسی:");
+  if (!report.investigation || report.investigation.mode === "fixed") {
+    lines.push("• حالت: fixed");
+  } else {
+    lines.push(`• حالت: agentic${report.investigation.model ? ` (${report.investigation.model})` : ""}`);
+  }
+  if (report.investigation?.fallbackReason) {
+    lines.push(`• بازگشت به fixed: ${report.investigation.fallbackReason}`);
+  }
+  if (!report.investigation?.steps.length) {
+    lines.push("• قدم ابزاری ثبت نشد.");
+  } else {
+    for (const step of report.investigation.steps) {
+      lines.push(`• ${step.tool} — دلیل: ${step.reason}`);
+      lines.push(`   ↳ ${step.summary}`);
+    }
   }
 
   if (report.limitations.length) {
@@ -874,12 +930,159 @@ export interface DiagnosisRun {
  * watch_app هم از همین مسیر استفاده می‌کند تا env و بدنهٔ /health هرگز وارد
  * ورودی تشخیص نشوند.
  */
+function agenticRequested(options: DiagnosisOptions): boolean {
+  if (options.llm === false) return false;
+  return (options.investigateMode ?? config.investigateMode) === "agentic";
+}
+
+async function agenticRemedyContext(app: string, options: DiagnosisOptions): Promise<{
+  remedies: RemedyOption[];
+  rollbackAvailable: boolean;
+  manualEnvRecovery: boolean;
+  envChangeAt?: string;
+  envChangeSource?: string;
+}> {
+  if (options.agentic?.remedies?.length) {
+    const remedies = options.agentic.remedies;
+    return {
+      remedies,
+      rollbackAvailable: remedies.some((item) => item.id === "rollback_last_env_change"),
+      manualEnvRecovery: remedies.some((item) => item.id === "set_env"),
+    };
+  }
+  const incidentAt = options.incidentAt ?? new Date().toISOString();
+  let envChange: EnvChangeCandidate | null = options.envChange === undefined ? null : options.envChange;
+  if (options.envChange === undefined) {
+    try {
+      envChange = await findLatestEnvChange(app, incidentAt, {
+        windowSec: options.envChangeWindowSec ?? ENV_CHANGE_WINDOW_SEC,
+        includeReleases: options.includeReleaseEnvEvents !== false,
+        includeBaseline: false,
+        ...(options.stateDir ? { stateDir: options.stateDir } : {}),
+      });
+    } catch {
+      envChange = null;
+    }
+  }
+  const journalRollback = envChange?.revertable === true && envChange.changes.length > 0;
+  const baselineExists = hasEnvBaseline(app, options.stateDir);
+  let baselineAt: string | undefined;
+  let baselineReleaseAt: string | undefined;
+  if (!journalRollback && baselineExists) {
+    try {
+      const info = await findBaselineRollbackInfo(app, incidentAt, {
+        includeReleases: options.includeReleaseEnvEvents !== false,
+        ...(options.stateDir ? { stateDir: options.stateDir } : {}),
+      });
+      baselineAt = info?.baselineAt;
+      baselineReleaseAt = info?.releaseAt;
+    } catch {
+      baselineAt = undefined;
+    }
+  }
+  const rollbackAvailable = journalRollback || Boolean(baselineAt);
+  const manualEnvRecovery = !rollbackAvailable && !baselineExists && envChange !== null;
+  const remedies = rollbackAvailable
+    ? [ROLLBACK_ENV_REMEDY]
+    : manualEnvRecovery
+      ? [MANUAL_ENV_REMEDY]
+      : [RESTART_REMEDY];
+  return {
+    remedies,
+    rollbackAvailable,
+    manualEnvRecovery,
+    ...(baselineReleaseAt
+      ? { envChangeAt: baselineReleaseAt, envChangeSource: "baseline" }
+      : envChange
+        ? { envChangeAt: envChange.at, envChangeSource: envChange.source }
+        : {}),
+  };
+}
+
+function bundleFromAgentic(
+  app: string,
+  attempt: AgenticInvestigation,
+  remedy: Awaited<ReturnType<typeof agenticRemedyContext>>,
+  options: DiagnosisOptions,
+): DiagnosisBundle {
+  let selectedRemedy = attempt.selectedRemedy
+    ?? (remedy.rollbackAvailable ? "rollback_last_env_change" : remedy.manualEnvRecovery ? "set_env" : "restart");
+  let remedySource = attempt.remedySource;
+  const notes = [...attempt.notes];
+  if (remedy.manualEnvRecovery && selectedRemedy === "restart") {
+    selectedRemedy = "set_env";
+    remedySource = "rules";
+    notes.push("پیشنهاد ری‌استارت به‌دلیل نبود baseline و وجود تغییر env نادیده گرفته شد؛ بازیابی دستی env انتخاب شد.");
+  }
+  const observedAt = new Date().toISOString();
+  return {
+    incidentId: `inc_${randomUUID().slice(0, 8)}`,
+    app,
+    observedAt,
+    windowAnchor: options.incidentAt ?? observedAt,
+    logs: attempt.logs,
+    events: attempt.events,
+    cpu: attempt.cpu,
+    memory: attempt.memory,
+    probe: attempt.probe ?? { error: "در حلقهٔ agentic پروبی ثبت نشد." },
+    env: null,
+    plan: options.plan ?? null,
+    evidence: attempt.evidence,
+    hypotheses: attempt.hypotheses,
+    notes,
+    llmUsed: true,
+    llmNote: notes.join(" ") || undefined,
+    selectedRemedy,
+    remedySource,
+    rollbackAvailable: remedy.rollbackAvailable,
+    ...(remedy.envChangeAt ? { envChangeAt: remedy.envChangeAt, envChangeSource: remedy.envChangeSource } : {}),
+  };
+}
+
 export async function runDiagnosis(
   app: string,
   symptom?: string,
   options: DiagnosisOptions = {},
 ): Promise<DiagnosisRun> {
-  const bundle = await gatherDiagnosis(app, symptom, options);
+  let trace: InvestigationTrace = { mode: "fixed", steps: [] };
+  let bundle: DiagnosisBundle;
+  if (agenticRequested(options)) {
+    const canCall = Boolean(options.agentic?.callLlm) || config.llmEnabled;
+    if (!canCall) {
+      trace = { mode: "fixed", steps: [], fallbackReason: "INVESTIGATE_MODE=agentic اما LLM تنظیم نشده است." };
+      bundle = await gatherDiagnosis(app, symptom, options);
+      bundle.notes.unshift(trace.fallbackReason!);
+    } else {
+      const remedy = await agenticRemedyContext(app, options);
+      const attempt = await investigateAgentic({
+        app,
+        symptom,
+        remedies: remedy.remedies,
+        model: options.agentic?.model ?? config.llmModel,
+        now: options.agentic?.now,
+        limits: options.agentic?.limits,
+        callLlm: options.agentic?.callLlm,
+        executeTool: options.agentic?.executeTool,
+        detect: options.agentic?.detect,
+      });
+      trace = {
+        mode: attempt.ok ? "agentic" : "fixed",
+        steps: attempt.steps,
+        toolCalls: attempt.toolCalls,
+        elapsedMs: attempt.elapsedMs,
+        model: attempt.model,
+        ...(attempt.ok ? {} : { fallbackReason: attempt.reason ?? "بازگشت به مسیر fixed." }),
+      };
+      if (attempt.ok) {
+        bundle = bundleFromAgentic(app, attempt, remedy, options);
+      } else {
+        bundle = await gatherDiagnosis(app, symptom, options);
+        bundle.notes.unshift(trace.fallbackReason!);
+      }
+    }
+  } else {
+    bundle = await gatherDiagnosis(app, symptom, options);
+  }
   const report: IncidentReport = {
     incidentId: bundle.incidentId,
     provider: "liara",
@@ -895,7 +1098,19 @@ export async function runDiagnosis(
       "لاگ لیارا استریم نمی‌شود؛ خواندن لاگ بر پایهٔ polling انجام می‌شود.",
       "نتیجهٔ تشخیص بر پایهٔ شواهد موجود در بازهٔ زمانی انتخابی است، نه دادهٔ کامل.",
     ],
+    investigation: trace,
   };
+
+  if (trace.mode === "agentic" && options.captureBaseline !== false && options.envChange === undefined) {
+    try {
+      const saved = await captureHealthyEnvBaseline(app, bundle.probe, {
+        ...(options.stateDir ? { stateDir: options.stateDir } : {}),
+      });
+      if (saved) bundle.notes.push("baseline سالم env برای rollback آینده ثبت شد.");
+    } catch {
+      bundle.notes.push("ثبت baseline سالم env ناموفق بود؛ تشخیص بدون آن ادامه می‌یابد.");
+    }
+  }
 
   // ذخیرهٔ baseline برای verify_fix
   const errPattern = dominantErrorPattern(bundle.logs);
@@ -918,13 +1133,17 @@ export async function runDiagnosis(
     errorsSeen: errPattern?.count ?? 0,
   }, options.stateDir);
 
-  const analysisLine = bundle.llmUsed
-    ? `🧠 منبع تحلیل: LLM (${config.llmModel}) — علت‌ها از detectorهای قانونی، رتبه‌بندی و انتخاب راهکار با LLM`
-    : `🧠 منبع تحلیل: fallback قانون‌محور${bundle.llmNote ? ` — ${bundle.llmNote}` : ""}`;
+  const analysisLine = trace.fallbackReason
+    ? `🧠 منبع تحلیل: بازگشت به مسیر fixed — ${trace.fallbackReason}`
+    : trace.mode === "agentic"
+      ? `🧠 منبع تحلیل: حلقهٔ agentic${trace.model ? ` (${trace.model})` : ""} — فرضیه‌ها با detectorهای قانونی سنجیده شدند`
+      : bundle.llmUsed
+        ? `🧠 منبع تحلیل: LLM (${config.llmModel}) — علت‌ها از detectorهای قانونی، رتبه‌بندی و انتخاب راهکار با LLM`
+        : `🧠 منبع تحلیل: fallback قانون‌محور${bundle.llmNote ? ` — ${bundle.llmNote}` : ""}`;
   const inputLine =
     `🧾 ورودی تشخیص: لاگ/رویدادهای ${options.eventWindowMinutes ?? DEFAULT_EVIDENCE_WINDOW_MINUTES} دقیقهٔ پیرامون رخداد، متریک، و پروب HTTP؛ ` +
     "مقدار env و بدنهٔ /health استفاده نمی‌شوند (فقط متادیتای وجود تغییر env برای انتخاب اقدام بررسی می‌شود).";
-  const text = `${analysisLine}\n${inputLine}\n${formatIncident(report, bundle.notes)}`;
+  const text = `${investigationLead(report)}\n${analysisLine}\n${inputLine}\n${formatIncident(report, bundle.notes)}`;
   return {
     report,
     text,
@@ -992,7 +1211,7 @@ export function registerCompositeTools(server: McpServer): void {
     {
       title: "تشخیص علت رخداد با شواهد",
       description:
-        "جمع‌آوری لاگ و رویدادهای ۱۰ دقیقهٔ اخیر، متریک (۳۰ دقیقه) و ۳ پروب سلامت؛ سپس رتبه‌بندی ۳ علت محتمل با اطمینان و شناسهٔ شواهد + راهکارها. اگر اپ سالم باشد، snapshot env فقط محلی (0600/gitignored) برای rollback آینده ثبت می‌شود و به LLM نمی‌رود. خروجی ساخت‌یافته = گزارش رخداد.",
+        "اگر INVESTIGATE_MODE=agentic و LLM تنظیم باشد، مدل فقط با ابزارهای read-only بررسی می‌کند و نتیجه با detectorها سنجیده می‌شود. وگرنه همان مسیر fixed است: لاگ، رویداد، متریک و پروب، سپس رتبه‌بندی. env و بدنهٔ /health به مدل نمی‌روند. خروجی شامل بخش مسیر بررسی است.",
       inputSchema: {
         app: z.string().min(1).describe("نام اپ در لیارا"),
         symptom: z.string().optional().describe("علائم گزارش‌شده توسط کاربر (اختیاری)"),

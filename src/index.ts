@@ -28,6 +28,7 @@ export const SERVER_INSTRUCTIONS = [
   "ایمنی: خواندن‌ها آزادند؛ هر نوشتن از APPROVAL_POLICY و runGuardedAction عبور می‌کند. توکن/کلید را در چت ننویسید.",
   "راهکار قابل بازگشت: rollback_last_env_change (risk=medium) فقط وقتی پیشنهاد می‌شود که تغییر env دقیقی در ۱۰ دقیقهٔ قبل در تاریخچهٔ محلی یا baseline سالم ثبت شده باشد؛ در غیر این صورت restart. تأیید طبق APPROVAL_POLICY.",
   "مقدار env و بدنهٔ /health ورودی تشخیص نیستند؛ فقط وجود/زمان تغییر env برای انتخاب اقدام بررسی می‌شود.",
+  "بررسی: INVESTIGATE_MODE=agentic (پیش‌فرض وقتی LLM تنظیم است) فقط ابزارهای read-only را به مدل می‌دهد. fixed همان مسیر قبلی است.",
 ].join("\n");
 
 /** ساخت سرور و ثبت ابزارها */
@@ -138,7 +139,7 @@ if (isDirectRun) {
         "شروع: ping → liara_list_apps → diagnose/watch_app",
         "متغیرها: LIARA_API_TOKEN (الزامی)، LIARA_TEAM_ID، LIARA_API_BASE، LIARA_DNS_BASE،",
         "          AGATE_ALLOWED_APPS، APPROVAL_POLICY، WATCH_APP، WATCH_INTERVAL_SEC،",
-        "          WATCH_COOLDOWN_SEC، WATCH_REMEDIATE، LLM_BASE_URL، LLM_API_KEY، LLM_MODEL",
+        "          WATCH_COOLDOWN_SEC، WATCH_REMEDIATE، LLM_BASE_URL، LLM_API_KEY، LLM_MODEL، INVESTIGATE_MODE",
         "اقدام قابل بازگشت: rollback_last_env_change (risk=medium؛ در نبود مدرک → restart)",
       ].join("\n") + "\n",
     );

@@ -115,6 +115,7 @@ export function registerReadTools(server: McpServer): void {
             `🔑 توکن لیارا: ${hasToken() ? "تنظیم شده" : "تنظیم نشده"}`,
             `📦 اپ‌های مجاز: ${config.allowedApps.join("، ")}`,
             `🤖 LLM: ${config.llmEnabled ? `فعال (${config.llmModel})` : "غیرفعال — حالت قواعد"}`,
+            `🔎 بررسی diagnose: ${config.investigateMode}`,
             `🌐 بیس API: ${config.apiBase}`,
           ].join("\n"),
           { ok: true, token: hasToken(), allowedApps: config.allowedApps, llm: config.llmEnabled },

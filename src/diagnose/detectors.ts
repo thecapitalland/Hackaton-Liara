@@ -628,6 +628,9 @@ const crashLoop: Detector = {
 
 const DETECTORS: Detector[] = [memoryLeak, oom, http5xx, missingEnv, crashLoop, cpuThrottle, slowResponses];
 
+/** شناسهٔ همان هفت detector قانونی. مدل اجازهٔ علت جدید ندارد. */
+export const DETECTOR_IDS: readonly string[] = DETECTORS.map((detector) => detector.id);
+
 /** سقف اطمینان وقتی لاگ مشکوک به تزریق پرامپت است. */
 export const INJECTION_CONFIDENCE_CAP = 0.4;
 

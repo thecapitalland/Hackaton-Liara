@@ -890,6 +890,11 @@ export async function runWatchCheck(options: WatchOptions): Promise<WatchCheckRe
       remediationSkippedReason = "چون تشخیص کامل نشد، هیچ اقدامی روی اپ انجام نشد.";
     } else if (!diagnosis.report.hypotheses.length) {
       remediationSkippedReason = "تشخیص به علت مشخصی نرسید؛ برای جلوگیری از تغییر کورکورانه، اقدامی انجام نشد.";
+    } else if (
+      diagnosis.report.investigation?.mode === "agentic" &&
+      diagnosis.report.hypotheses.every((hypothesis) => hypothesis.kind !== "observed")
+    ) {
+      remediationSkippedReason = "فرضیهٔ agentic با detector تأیید نشد؛ اقدام خودکار انجام نشد.";
     } else {
       const preferredKind: WatchRemediation["kind"] =
         diagnosis.selectedRemedy === "rollback_last_env_change"

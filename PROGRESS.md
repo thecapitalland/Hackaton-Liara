@@ -4,6 +4,13 @@
 
 LangGraph خارج از محدودهٔ این ارائه و کار آینده است. در مخزن issue بازی برای آن وجود ندارد.
 
+## Agentic investigate · 2026-10-23
+- `INVESTIGATE_MODE=agentic|fixed`. Default is agentic only when `LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL` are set; otherwise fixed. The previous detector path is unchanged.
+- The model may call only `liara_status` (no env keys), `liara_logs`, `liara_events`, `liara_metrics`, `liara_releases`, and `http_probe` on `/`, `/health`, `/api/challenges`, `/api/status`. Write tools are rejected before execution.
+- Budgets: 8 tool calls, 90 seconds, 10 seconds per LLM call. Tool output is redacted and env-blind. Invalid JSON, errors, and exhausted budget fall back to fixed and the reason is in the report section «مسیر بررسی».
+- Read-only comparison, no Liara write, `.env` not modified. `gpt-5-mini` on BoxAPI finished three scenarios as unsupported `crash_loop` (confidence 0.35) and timed out on leak. `deepseek-v4.1-flash` on `api.gapgpt.app` has tool calling; leak matched `memory_leak`/`oom` inside the loop, and slow/error500/blind fell back to fixed which named the expected detector. Reports did not contain `BUG_MODE`.
+- Gates: typecheck PASS, `npm test` 113/113, build PASS, offline and live smoke PASS, `demo:test` 8/8, secret-scan PASS (85 files). Unconfirmed agentic hypotheses do not auto-remediate.
+
 ## Feature freeze · 2026-10-23
 - Fail-closed elicitation, watch 5xx/timeout/outage persistence, demo-site POST admin header, injection evidence, log redaction, and a single audit line per tool call.
 - Human-approved executions now stamp `approval: "approved"` so the one audit line is not recorded as `auto`.

@@ -31,6 +31,7 @@
 | Live rollback | **NOT_RUN** | برای ضبط ویدیو موکول شده؛ در آن بررسی mutation انجام نشد |
 | تأیید | `APPROVAL_POLICY=strict` پیش‌فرض | همهٔ نوشتن‌ها تأیید می‌خواهند. `balanced` فقط low-risk را خودکار می‌کند. high-risk در هر سیاست تأیید می‌خواهد |
 | `liara_status` | نام کلیدهای env | مقدارها ماسک می‌شوند. `diagnose` و LLM این فهرست را نمی‌بینند |
+| بررسی diagnose | `INVESTIGATE_MODE` | پیش‌فرض `agentic` وقتی LLM تنظیم است، وگرنه `fixed`. مسیر fixed همان تشخیص قبلی است |
 | LangGraph | خارج از محدوده | کار آینده است؛ issue بازی برای آن باز نیست |
 
 ## معرفی کوتاه
@@ -61,12 +62,12 @@
 | بررسی | نتیجه | شاهد |
 |---|---|---|
 | `npm run typecheck` | **PASS** | `tsc -p tsconfig.json --noEmit` |
-| `npm test` | **PASS — 103/103** | 0 failed · شامل elicitation، watch outage، redaction، audit یک‌خطی، تأیید approved و server |
+| `npm test` | **PASS — 113/113** | 0 failed · شامل allowlist ابزار agentic، سقف اطمینان، مهلت حلقه، توقف watch روی فرضیهٔ تأییدنشده، fallback و audit |
 | `npm run build` | **PASS** | `dist` بازسازی شد |
 | `npm run smoke -- --offline` | **PASS** | stdio handshake واقعی، کشف **۳۳ ابزار**، ping |
 | `npm run smoke` | **PASS** | live list + HTTP probe، فقط read-only |
 | `npm run demo:test` | **PASS — 8/8** | health، slow، error500، leak، POST ادمین، رد query string |
-| `npm run secret-scan` | **PASS** | **۸۲ فایل** قابل commit؛ کلید تنظیم‌شده/private-key marker یافت نشد (detector عمومی نیست) |
+| `npm run secret-scan` | **PASS** | **۸۵ فایل** قابل commit؛ کلید تنظیم‌شده/private-key marker یافت نشد (detector عمومی نیست) |
 | `node dist/index.js --help` | **PASS** | command/args/cwd، متغیرها و خلاصهٔ اقدام قابل‌بازگشت |
 | `git diff --check` | **PASS** | فقط هشدارهای line-ending ویندوز |
 
@@ -225,6 +226,21 @@ flowchart LR
   HUMAN["Human"] -->|elicitation or CLI| MCP
 ```
 
+## طراحی قابل گسترش
+
+تشخیص دو مسیر دارد و با `INVESTIGATE_MODE` انتخاب می‌شود:
+
+| حالت | چه وقت | رفتار |
+|---|---|---|
+| `fixed` | پیش‌فرض وقتی LLM تنظیم نیست، یا مقدار صریح `fixed` | همان مسیر قبلی: جمع‌آوری لاگ، رویداد، متریک و پروب، سپس رتبه‌بندی. این مسیر تغییر نکرده است. |
+| `agentic` | پیش‌فرض وقتی `LLM_BASE_URL` و `LLM_API_KEY` و `LLM_MODEL` تنظیم باشند، یا مقدار صریح `agentic` | مدل با tool-calling استاندارد OpenAI فقط ابزارهای خواندنی را صدا می‌زند. |
+
+Allowlist صریح حلقه: `liara_status` (بدون نام و مقدار env)، `liara_logs`، `liara_events`، `liara_metrics`، `liara_releases`، `http_probe` روی `/`، `/health`، `/api/challenges` و `/api/status`. ابزار نوشتن، `propose_action` و `execute_action` قبل از اجرا رد می‌شوند. بودجه: حداکثر ۸ فراخوانی ابزار، ۹۰ ثانیه برای کل حلقه (قبل از هر فراخوانی مدل و هر ابزار چک می‌شود)، و حداکثر ۱۰ ثانیه برای هر فراخوانی LLM. خروجی ابزار قبل از مدل از `redact.ts` رد می‌شود؛ نام و مقدار env، بدنهٔ `/health` و `BUG_MODE` به مدل نمی‌رسند.
+
+پایان حلقه یک JSON با فرضیه از همان ۷ detector و راهکار از همان فهرست مجاز است و به شواهدِ خوانده‌شده ارجاع می‌دهد. اگر آن شاهد یا detector قانونی پشت فرضیه نباشد، اطمینان کم می‌شود و `watch` از روی همان فرضیه اقدام خودکار نمی‌کند. JSON نامعتبر، خطای مدل یا تمام‌شدن بودجه به مسیر `fixed` برمی‌گردد و دلیلش در گزارش می‌آید.
+
+گزارش `diagnose` بخش **مسیر بررسی** دارد: هر قدم ابزار، دلیل مدل و خلاصهٔ نتیجه است. خلاصهٔ همین مسیر در ابتدای متن است تا در خط ممیزی همان فراخوانی `diagnose` ثبت شود.
+
 ## ابزارها (۳۳ ابزار)
 
 | سطح | ابزارها |
@@ -234,7 +250,7 @@ flowchart LR
 | ترکیبی | `deploy_project`, `diagnose`, `apply_fix`, `verify_fix`, `connect_domain`, `watch_after_deploy`, `watch_app` |
 | C: راهنما | `guide_domain_registration`, `guide_rollback`, `guide_github_deploy` |
 
-`http_probe(target, path="/health", count=3)` فقط HTTPS دامنه‌های متصل به اپ‌های مجاز را می‌پذیرد و redirect را دنبال نمی‌کند. `diagnose` علاوه بر متریک و لاگ، صفحهٔ `/` را می‌سنجد تا سلامت `/health` خطای صفحهٔ اصلی را پنهان نکند. بازهٔ شواهد و رویدادها **۱۰ دقیقه حول زمان رخداد** است و رویداد قدیمی‌تر یا بدون timestamp معتبر کنار گذاشته می‌شود. `verify_fix` نبودن لاگ یا baseline معتبر را موفقیت گزارش نمی‌کند.
+`http_probe(target, path="/health", count=3)` فقط HTTPS دامنه‌های متصل به اپ‌های مجاز را می‌پذیرد و redirect را دنبال نمی‌کند. `diagnose` علاوه بر متریک و لاگ، صفحهٔ `/` را می‌سنجد تا سلامت `/health` خطای صفحهٔ اصلی را پنهان نکند. گزارش diagnose بخش **مسیر بررسی** دارد؛ در حالت agentic هر قدم ابزار، دلیل مدل و خلاصهٔ نتیجه است و در حالت fixed می‌گوید مسیر قاعده‌ای استفاده شده. جزئیات بودجه و allowlist در «طراحی قابل گسترش» است. بازهٔ شواهد و رویدادها **۱۰ دقیقه حول زمان رخداد** است و رویداد قدیمی‌تر یا بدون timestamp معتبر کنار گذاشته می‌شود. `verify_fix` نبودن لاگ یا baseline معتبر را موفقیت گزارش نمی‌کند.
 
 ## پایش مداوم
 

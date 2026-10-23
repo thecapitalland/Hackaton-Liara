@@ -57,6 +57,23 @@ export interface IncidentReport {
   remedySource?: "llm" | "rules";
   verification?: Record<string, unknown> | null;
   limitations: string[];
+  /** مسیر fixed یا قدم‌های حلقهٔ agentic. */
+  investigation?: InvestigationTrace;
+}
+
+export interface InvestigationStep {
+  tool: string;
+  reason: string;
+  summary: string;
+}
+
+export interface InvestigationTrace {
+  mode: "agentic" | "fixed";
+  fallbackReason?: string;
+  steps: InvestigationStep[];
+  toolCalls?: number;
+  elapsedMs?: number;
+  model?: string;
 }
 
 /* ── داده‌های خام جمع‌آوری‌شده ─────────────────────────────────────── */
