@@ -26,7 +26,7 @@ export const SERVER_INSTRUCTIONS = [
   "عیب‌یابی: diagnose(app, symptom) → apply_fix(incidentId) → verify_fix.",
   "پایش: watch_app(app, cycles, intervalSec) یا npm run watch؛ هر چرخه سه مسیر را سه بار پروب می‌کند و در صورت رخداد، diagnose را با همان ۹ نمونه و رویدادهای ۱۰ دقیقه اجرا می‌کند.",
   "ایمنی: خواندن‌ها آزادند؛ هر نوشتن از APPROVAL_POLICY و runGuardedAction عبور می‌کند. توکن/کلید را در چت ننویسید.",
-  "راهکار کم‌خطر: rollback_last_env_change فقط وقتی پیشنهاد می‌شود که تغییر env دقیقی در ۱۰ دقیقهٔ قبل در تاریخچهٔ محلی ثبت شده باشد؛ در غیر این صورت restart.",
+  "راهکار قابل بازگشت: rollback_last_env_change (risk=medium) فقط وقتی پیشنهاد می‌شود که تغییر env دقیقی در ۱۰ دقیقهٔ قبل در تاریخچهٔ محلی یا baseline سالم ثبت شده باشد؛ در غیر این صورت restart. تأیید طبق APPROVAL_POLICY.",
   "مقدار env و بدنهٔ /health ورودی تشخیص نیستند؛ فقط وجود/زمان تغییر env برای انتخاب اقدام بررسی می‌شود.",
 ].join("\n");
 
@@ -149,7 +149,7 @@ if (isDirectRun) {
         "متغیرها: LIARA_API_TOKEN (الزامی)، LIARA_TEAM_ID، LIARA_API_BASE، LIARA_DNS_BASE،",
         "          AGATE_ALLOWED_APPS، APPROVAL_POLICY، WATCH_APP، WATCH_INTERVAL_SEC،",
         "          WATCH_COOLDOWN_SEC، WATCH_REMEDIATE، LLM_BASE_URL، LLM_API_KEY، LLM_MODEL",
-        "اقدام کم‌خطر: rollback_last_env_change (در نبود تغییر env قابل‌بازگشت → restart)",
+        "اقدام قابل بازگشت: rollback_last_env_change (risk=medium؛ در نبود مدرک → restart)",
       ].join("\n") + "\n",
     );
   } else {

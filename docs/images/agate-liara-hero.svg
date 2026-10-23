@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-label="Agate-Liara — MCP for Liara PaaS">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#070B18"/>
+      <stop offset="0.55" stop-color="#0B1226"/>
+      <stop offset="1" stop-color="#111B3A"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#5EEAD4"/>
+      <stop offset="0.55" stop-color="#60A5FA"/>
+      <stop offset="1" stop-color="#FBBF24"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.78" cy="0.25" r="0.55">
+      <stop offset="0" stop-color="#2563EB" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#2563EB" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#9CC3FF" stroke-opacity="0.07" stroke-width="1"/>
+    </pattern>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="360" fill="url(#bg)"/>
+  <rect width="1280" height="360" fill="url(#grid)"/>
+  <rect width="1280" height="360" fill="url(#glow)"/>
+
+  <circle cx="1030" cy="92" r="82" fill="#5EEAD4" opacity="0.08" filter="url(#soft)"/>
+  <circle cx="1160" cy="256" r="92" fill="#FBBF24" opacity="0.06" filter="url(#soft)"/>
+
+  <g font-family="Segoe UI, Arial, sans-serif">
+    <text x="72" y="78" fill="#8FB3E8" font-size="14" font-weight="600" letter-spacing="2.4">AGATE CO. · STARCOACH AGENTIC AI HACKATHON</text>
+    <text x="70" y="158" fill="#F8FAFC" font-size="64" font-weight="700" letter-spacing="-1.5">Agate-Liara</text>
+    <text x="72" y="205" fill="#D7E5FF" font-size="25" font-weight="500">MCP for Liara PaaS</text>
+    <text x="72" y="243" fill="url(#accent)" font-size="21" font-weight="600" letter-spacing="0.4">diagnose → approve → remediate → verify</text>
+
+    <g font-size="14" font-weight="600">
+      <rect x="72" y="276" width="142" height="34" rx="17" fill="#0F1E3A" stroke="#2B4E7E"/>
+      <text x="143" y="298" fill="#A7D8FF" text-anchor="middle">env-blind</text>
+      <rect x="226" y="276" width="196" height="34" rx="17" fill="#0F1E3A" stroke="#2B4E7E"/>
+      <text x="324" y="298" fill="#A7D8FF" text-anchor="middle">hash-bound approvals</text>
+      <rect x="434" y="276" width="132" height="34" rx="17" fill="#0F1E3A" stroke="#2B4E7E"/>
+      <text x="500" y="298" fill="#A7D8FF" text-anchor="middle">audit trail</text>
+    </g>
+
+    <g transform="translate(790 64)">
+      <rect x="0" y="0" width="384" height="232" rx="24" fill="#0A1328" stroke="#25406B"/>
+      <rect x="24" y="24" width="336" height="52" rx="14" fill="#101F3E" stroke="#2F5488"/>
+      <circle cx="48" cy="50" r="7" fill="#5EEAD4"/>
+      <text x="68" y="56" fill="#E2E8F0" font-size="17" font-weight="600">MCP stdio</text>
+      <text x="304" y="56" fill="#7DD3FC" font-size="12" text-anchor="end">OpenCode native</text>
+
+      <g font-size="13" font-weight="600">
+        <rect x="24" y="100" width="144" height="44" rx="12" fill="#0F1E3A" stroke="#2B4E7E"/>
+        <text x="96" y="127" fill="#BFDBFE" text-anchor="middle">Liara API</text>
+        <rect x="216" y="100" width="144" height="44" rx="12" fill="#0F1E3A" stroke="#2B4E7E"/>
+        <text x="288" y="127" fill="#BFDBFE" text-anchor="middle">HTTP probe</text>
+        <rect x="24" y="164" width="144" height="44" rx="12" fill="#0F1E3A" stroke="#2B4E7E"/>
+        <text x="96" y="191" fill="#BFDBFE" text-anchor="middle">.agate state</text>
+        <rect x="216" y="164" width="144" height="44" rx="12" fill="#0F1E3A" stroke="#2B4E7E"/>
+        <text x="288" y="191" fill="#BFDBFE" text-anchor="middle">verify_fix</text>
+      </g>
+
+      <path d="M 168 122 H 216" stroke="#5EEAD4" stroke-width="2" fill="none"/>
+      <path d="M 168 186 H 216" stroke="#FBBF24" stroke-width="2" fill="none"/>
+      <path d="M 96 144 V 164" stroke="#60A5FA" stroke-width="2" fill="none"/>
+      <path d="M 288 144 V 164" stroke="#60A5FA" stroke-width="2" fill="none"/>
+      <path d="M 168 76 V 100" stroke="#5EEAD4" stroke-width="2" fill="none"/>
+      <path d="M 216 76 V 100" stroke="#5EEAD4" stroke-width="2" fill="none" opacity="0.35"/>
+    </g>
+  </g>
+</svg>

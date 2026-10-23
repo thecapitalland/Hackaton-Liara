@@ -63,7 +63,15 @@ Approved network creation succeeded: response `{network:{_id}}`; reconciliation 
 
 **Successful live create (15:38 UTC):** exact body `{name:"agate-liara",planID:"small-g2",bundlePlanID:"basic",platform:"node",network:"6ada1e64b3b5ca83e1ee0ce1"}` → `200 {"projectID":"6ada2dd838253e6cdf2b836e"}`. Reconciliation `GET /v1/projects` returned one app with `status ACTIVE`, `planID small-g2`, `bundlePlanID basic`, that network, and `isDeployed:false`. The earlier g2 failure had been sent without a network; `network` and `bundlePlanID` are both required by the live API for this team. This does not prove upload/release success or service health.
 
-Public health request failed with Node DNS `ENOTFOUND agate-liara.liara.run` (no HTTP response), before any release existed. No network workaround applied, as instructed by the owner. This result is historical and must be re-tested after deployment.
+Public health request failed with Node DNS `ENOTFOUND agate-liara.liara.run` (no HTTP response), before any release existed. No network workaround applied, as instructed by the owner. This result is historical; re-tested after deployment on 2026-10-23 (see below).
+
+### Live update · 2026-10-23
+
+- The app has been deployed: the latest 10 releases listed by `GET /v1/projects/agate-liara/releases` are `READY`.
+- `GET /` and `GET /health` on `https://agate-liara.liara.run` both returned HTTP 200 in the latest probe (`p50` ≈ 782ms and 607ms; one sample, not an SLA).
+- `GET` status reports `ACTIVE`, `small-g2`, `scale=1`, and 4 env keys. Values and key names are not printed. The default `*.liara.run` domain is not shown by the domains endpoint; it was probed independently.
+- OpenCode 2.1.2 is connected natively with `codemode:false`; `agate-liara_ping` and `agate-liara_liara_list_apps` were invoked directly from OpenCode's tool list, not through `scripts/mcp-call.ts`.
+- No restart, rollback, env mutation, resize, domain or SSL write was performed for this update. Live remediation remains deferred to the video recording.
 
 ### Strict catalog contract (latest)
 

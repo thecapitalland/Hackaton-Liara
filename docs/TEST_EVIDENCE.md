@@ -4,23 +4,29 @@
 
 This section supersedes earlier test counts and the legacy `BUG_MODE=off` policy exception. Earlier sections remain as historical records of the checks performed at that time.
 
+**Current correction (commit `e65c087`):** `rollback_last_env_change` is `risk=medium` and requires approval under both `strict` and `balanced`. `balanced` auto-runs only `low` actions such as `restart`; it does not auto-run rollback. Earlier sections that describe rollback as `low`/automatic are historical and superseded.
+
 | Check | Result | Evidence / limits |
 |---|---|---|
 | `npm run typecheck` | PASS | `tsc -p tsconfig.json --noEmit` |
-| `npm test` | PASS | **87/87**, 0 failed (~2.3s); includes env-history, incident-window, remedy-selection, rollback-plan, watch, server, and approval tests |
+| `npm test` | PASS | **94/94**, 0 failed (~2.76s); includes env-history, incident-window, remedy-selection, rollback-plan, watch, server, and approval tests |
 | `npm run build` | PASS | `dist` refreshed |
 | `npm run smoke -- --offline` | PASS | Real stdio handshake, discovers **33 tools**, ping |
 | `npm run smoke` | PASS | Live read-only `liara_list_apps` + HTTPS probe; no provider mutation |
-| `node dist/index.js --help` | PASS | Connection command/args/cwd, required variables, low-risk action summary |
+| `npm run demo:test` | PASS | 7/7; healthy, slow, error500, leak, admin auth |
+| `node dist/index.js --help` | PASS | Connection command/args/cwd, required variables, revertable-action summary |
 | Startup stderr message | PASS | Verified from a real child process: version, allowed app, token configured/not configured, policy, watch app/interval, and `cwd`/state/package paths |
-| `npm run secret-scan` | PASS | 76 commit-eligible files; configured secrets/private-key markers absent (not a universal detector) |
+| `npm run secret-scan` | PASS | 79 commit-eligible files at the time of this run; configured secrets/private-key markers absent (not a universal detector) |
 | `git diff --check` | PASS | Exit 0; only Windows line-ending notices |
 | Generic `rollback_last_env_change` | PASS (unit) | Latest journal/audit/release candidate, 10-minute window, exact before/after rollback, mismatch protection, rollback-loop suppression |
+| Baseline-aware rollback | PASS (unit) | Healthy env snapshot is a third source; only changed keys are reverted; baseline file uses mode 0600 where supported; missing baseline returns a 3-option recovery card |
 | LLM remedy list/selection | PASS (unit) | Prompt contains `restart` plus `rollback_last_env_change` only when an exact revertable change exists; invalid selections are ignored |
 | Same-cycle probe samples | PASS (unit) | watch aggregates 3 routes × 3 samples = 9; diagnosis receives the same samples and reports `3/9`, not `2/3` |
 | Incident-window anchoring | PASS (unit) | Logs/events/crash-loop evidence anchored to `incidentAt`; older events dropped |
-| Live env rollback / live watcher remediation | NOT_RUN | `APPROVAL_POLICY=strict`, no live incident/remediation was triggered; no env mutation was performed for these checks |
-| Actual IDE connection | NOT_RUN | Standalone stdio smoke passes; per-IDE connection remains untested |
+| Live env rollback / live watcher remediation | NOT_RUN | Deferred to video recording; `APPROVAL_POLICY=strict`; zero provider mutations in these checks |
+| OpenCode native MCP | PASS | OpenCode 2.1.2; repo `opencode.json` sets `codemode:false`; `opencode mcp list` → `✓ agate-liara connected`; direct native calls `agate-liara_ping`, `agate-liara_liara_list_apps`, `agate-liara_liara_status`, `agate-liara_http_probe`; **not** `scripts/mcp-call.ts` |
+| Actual VS Code / Cursor / Codex connection | NOT_RUN | Only OpenCode 2.1.2 was natively verified; other IDE configs remain untested |
+| Live app / release / health | PASS (read-only) | App `ACTIVE` on `small-g2`; last 10 releases `READY`; `/` HTTP 200 p50 782ms; `/health` HTTP 200 p50 607ms; 4 env keys (values not read) |
 
 ## Successful app create (live, 15:38 UTC)
 - Owner approved the exact displayed body: `{name:"agate-liara",planID:"small-g2",bundlePlanID:"basic",platform:"node",network:"6ada1e64b3b5ca83e1ee0ce1"}`, quote hash `5babbdf1…255eee8`, 750000 Tomans/month.
@@ -47,7 +53,7 @@ This section supersedes earlier test counts and the legacy `BUG_MODE=off` policy
 - One separately approved network creation succeeded and was GET-verified. Projects reconciliation still empty. No upload or release write performed.
 - Public health GET: **FAIL / DNS**, `fetch failed` → `getaddrinfo ENOTFOUND agate-liara.liara.run`, no HTTP status. No network code/system changes.
 - Build after live shape compatibility fixes: PASS. Final `npm test`: 32 passed, 0 failed (~1.19s). `npm run secret-scan`: 56 commit-eligible files, no configured secrets detected. These checks do not prove successful provider deployment.
-- Live deployment acceptance remains **NOT_RUN** (app creation succeeded, `isDeployed:false`); see PROGRESS.md and LIARA_API.md for exact response discrepancies.
+- Live deployment acceptance was **NOT_RUN at that time** (app creation succeeded, `isDeployed:false`). It was later completed: current app status is `ACTIVE`, releases are `READY`, and `/` + `/health` return HTTP 200. See the latest section at the top and PROGRESS.md.
 
 Environment: Windows, Node v26.2.0, npm 12.0.2, TypeScript 5.9.x; repository `thecapitalland/Hackaton-Liara`, local working tree based on `471d6f9`. This report describes the changes accompanying it, not a deployed release.
 
@@ -67,14 +73,14 @@ Environment: Windows, Node v26.2.0, npm 12.0.2, TypeScript 5.9.x; repository `th
 | Browser screenshot/mobile visual QA | BLOCKED / NOT_RUN | Screenshot tool refused capture because desktop window was not visible; no visual/mobile PASS claimed |
 | Mechanical UI detector | WARNINGS FIXED, NOT RERUN | Initial gradient-text / accent-stripe / grid warnings; removed gradient text, disabled stripe/grid pseudo-elements. Not proof of visual quality |
 | Live deploy / restart / resize / env / domain / SSL | NOT_RUN | No approval or successful preflight; zero provider mutations by this session |
-| Actual VS Code / Cursor / Codex / OpenCode connection | NOT_RUN | Config formats checked against current official docs; standalone stdio smoke is not IDE validation |
+| Actual VS Code / Cursor / Codex / OpenCode connection | OPENCODE PASS; OTHERS NOT_RUN (historical at the time) | At the time of this early section no IDE was connected. Current: OpenCode 2.1.2 is natively connected and invoked; VS Code/Cursor/Codex remain untested |
 | Optional LLM ranking live | NOT_RUN | Credentials configured locally but no live ranking test performed |
 
 Safety coverage: denial sends zero fetch calls; deploy_project on an existing app still requires approval; no writes before preflight; TTL/hash/replay and explicit human grant; env merge preserves existing keys; package excludes secrets; reports parser avoids guessing CPU units; HTTP target/path restrictions; HTTP error mapping and GET-only retry.
 
 Failure history: original demo leak test used heapUsed for Buffers and failed; fixed to inspect external memory as well. A packager test wrongly rejected `.gitignore` and was corrected to reject `.git/`. Initial build wrapper type error fixed and build rerun. These local failures are not hidden as live success.
 
-**Overall at the time of this early section: PARTIAL.** That blocker was resolved later (see the live deployment/release sections and the latest section at the top). Current status: local checks pass; live read-only checks pass; live env rollback/remediation and actual IDE connections remain NOT_RUN. See LIMITATIONS.md for unimplemented DNS mutation and other gaps.
+**Overall at the time of this early section: PARTIAL.** That blocker was resolved later. Current status: local checks pass (94/94); live read-only checks pass; OpenCode native MCP is connected and invoked; live env rollback/remediation remains intentionally NOT_RUN and is deferred to video recording; VS Code/Cursor/Codex connections remain untested. See LIMITATIONS.md for unimplemented DNS mutation and other gaps.
 
 ## 2026-10-22 — build guard and approval-expiry hardening
 | Check | Result | Evidence |
@@ -105,9 +111,9 @@ The earlier `timeout` was client-side: `releaseState()` did not unwrap `data.rel
 | Check | Result | Evidence |
 |---|---|---|
 | `npm run typecheck` | PASS | `tsc --noEmit` |
-| `npm test` | PASS (historical) | **55/55** at the time; final run is **87/87** in the latest section |
+| `npm test` | PASS (historical) | **55/55** at the time; the current run is **94/94** in the latest section |
 | `APPROVAL_POLICY` default | PASS | absent/invalid → `strict`; `.env.example` documents all three values |
-| `balanced` low-risk path | SUPERSEDED | The legacy `BUG_MODE=off` special case was removed on 2026-10-23. Current balanced behavior auto-runs `restart` and only an exact, revertable `rollback_last_env_change`; `liara_set_env` remains medium. |
+| `balanced` low-risk path | SUPERSEDED | The legacy `BUG_MODE=off` special case was removed on 2026-10-23. **Current:** `balanced` auto-runs only `low` actions such as `restart`; `rollback_last_env_change` is `medium` and requires approval; `liara_set_env` remains `medium`. |
 | High-risk override | PASS (unit) | create app/network, resize, scale remain `high` and require approval in every policy |
 | Audit trail | PASS (unit) | `.agate/audit.jsonl` entry records `approval:"auto:balanced"` and the policy notice |
 
@@ -132,7 +138,7 @@ This is a local/unit verification plus one read-only live diagnosis. No live pro
 | Check | Result | Evidence |
 |---|---|---|
 | `npm run typecheck` | PASS | `tsc -p tsconfig.json --noEmit` |
-| `npm test` | PASS (final) | **87/87**; final run includes `test/watch.test.ts`, env-history, incident-window, remedy-selection, and rollback-plan checks |
+| `npm test` | PASS (historical) | **87/87** at the time; current run is **94/94** in the latest section; includes `test/watch.test.ts`, env-history, incident-window, remedy-selection, and rollback-plan checks |
 | `npm run build` | PASS | `dist` refreshed |
 | `npm run secret-scan` | PASS | 76 commit-eligible files in the final run; configured secrets/private-key markers absent (not a universal detector) |
 | `npm run smoke -- --offline` | PASS | Real stdio handshake, discovers **33 tools**, ping; live deliberately skipped |
@@ -140,7 +146,7 @@ This is a local/unit verification plus one read-only live diagnosis. No live pro
 | Metrics summary | PASS (unit + live) | Official `cpuUsage`/`memoryUsage` array shape parsed; raw units are not guessed |
 | Cooldown | PASS (unit) | Same fingerprint suppressed within cooldown; a different incident is still reported; first run seeds the event watermark |
 | Audit mapping | PASS (unit) | `watch_incident` records `pending`, `approved`, `auto:balanced`, or `not-required` |
-| Approval policy | PASS (unit) | `strict` requires approval; `balanced` auto-runs `restart` and exact `rollback_last_env_change`; the legacy `BUG_MODE=off` exception was removed |
+| Approval policy | PASS (unit) | `strict` requires approval; `balanced` auto-runs only `low` actions such as `restart`; `rollback_last_env_change` is now `medium` and requires approval. The legacy `BUG_MODE=off` exception was removed |
 | Live `npm run watch -- --once` | PASS (read-only) | All three routes HTTP 200, 0/9 500s, max p50 1163ms, metrics summary present, no new incident |
 | Live remediation | NOT_RUN | `APPROVAL_POLICY=strict`; the healthy live run had no trigger and performed zero provider mutations |
 
