@@ -155,6 +155,8 @@ $ opencode mcp list
 ✓ agate-liara  connected
 ```
 
+> **نکتهٔ محیطی:** `opencode mcp list` وضعیت سرویس پس‌زمینهٔ workspace فعال را نشان می‌دهد. اگر OpenCode را از ریشهٔ مخزن اجرا می‌کنید، `opencode debug config` باید `opencode.json` همین مخزن را در فهرست sourceها نشان دهد؛ در این پروژه همین‌طور بود و اتصال native در session فعال با `codemode:false` تأیید شد.
+
 ### اثبات فراخوانی از ابزارهای خود OpenCode
 
 | فراخوانی | نتیجهٔ مشاهده‌شده |
