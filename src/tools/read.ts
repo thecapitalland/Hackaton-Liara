@@ -383,7 +383,7 @@ export function registerReadTools(server: McpServer): void {
     async () =>
       audited("liara_plans", undefined, {}, async () => {
         const catalog = await fetchPlanCatalog();
-        return result(`${fa.plansHeader}\n${catalog.pairs.length ? catalog.pairs.map(p => '• '+pairLabel(p)).join('\n') : '❌ ترکیب فعال و قیمت‌دار پیدا نشد.'}\n⚠️ available=true تضمین پذیرش POST نیست.`, {ok:true,...catalog});
+        return result(`${fa.plansHeader}\n${catalog.pairs.length ? catalog.pairs.map(p => '• '+pairLabel(p)).join('\n') : '❌ ترکیب فعال و قیمت‌دار پیدا نشد.'}\n⚠️ فقط پلن‌های ساخت CLI (شناسه free یا شامل g2، available و region=iran) با بستهٔ available زیر همان کلید. available=true تضمین پذیرش POST نیست.`, {ok:true,...catalog});
       }),
   );
 

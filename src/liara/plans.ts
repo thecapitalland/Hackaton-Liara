@@ -16,6 +16,19 @@ export interface PlanPair {
   totalMonthly: number;
   ramGB?: number;
   cpuCores?: number;
+  /** Disk GB. @liara/cli@9.6.0 package/lib/commands/app/create.js:143 (`volume`). */
+  diskGB?: number;
+}
+
+/**
+ * پلن قابل‌ساخت اپ جدید.
+ * @liara/cli@9.6.0 package/lib/commands/app/create.js:131-137
+ * @liara/cli@9.6.0 package/lib/commands/plan/list.js:11-13
+ * فیلدها: شناسه `free` یا شامل `g2`، `available === true`، `region === 'iran'`.
+ * نسل جداگانه‌ای در این سورس نیست و از اسم خطا ساخته نمی‌شود.
+ */
+export function isCreatableProjectPlan(planID: string, plan: Record<string, unknown>): boolean {
+  return (planID === "free" || planID.includes("g2")) && plan.available === true && plan.region === "iran";
 }
 
 function monthly(item: Record<string, unknown>): number | null {
@@ -24,15 +37,30 @@ function monthly(item: Record<string, unknown>): number | null {
   return null;
 }
 
-/** Exact-key join only. No g1 fallback, hardcoded generation, bundle name, or availability inference. */
+/**
+ * Join فقط با کلید دقیق planID.
+ * بسته: create.js:100-102، `projectBundlePlans[planID]` و `available`.
+ * قیمت منابع: create.js:144 از `price * 720`؛ اگر API عدد `displayPrice` داده همان ماهانه است.
+ * قیمت بسته: create.js:103-105 فیلد `displayPrice`.
+ */
 export function parsePlanCatalog(raw: unknown) {
   const { plans } = catalogSchema.parse(raw);
-  const projects = Object.fromEntries(Object.entries(plans.projects).filter(([,p]) => p.available === true && p.region === 'iran'));
+  const exclusions: { planID: string; reason: string }[] = [];
+  const projects: Record<string, Record<string, unknown>> = {};
+  for (const [planID, plan] of Object.entries(plans.projects)) {
+    if (!isCreatableProjectPlan(planID, plan)) {
+      exclusions.push({
+        planID,
+        reason: "فیلتر ساخت CLI نیست: شناسه باید free یا شامل g2 باشد و available و region=iran (@liara/cli@9.6.0 create.js:131-137).",
+      });
+      continue;
+    }
+    projects[planID] = plan;
+  }
   const projectBundlePlans = Object.fromEntries(Object.keys(projects).filter(id => plans.projectBundlePlans[id]).map(id => [id,
     Object.fromEntries(Object.entries(plans.projectBundlePlans[id]!).filter(([,b]) => b.available === true)),
   ]));
   const pairs: PlanPair[] = [];
-  const exclusions: { planID: string; reason: string }[] = [];
   for (const [planID,p] of Object.entries(projects)) {
     const bundles = projectBundlePlans[planID];
     const resourceMonthly = monthly(p);
@@ -45,7 +73,8 @@ export function parsePlanCatalog(raw: unknown) {
       if (resourceMonthly === null || bundleMonthly === null) { exclusions.push({planID,reason:`قیمت معتبر برای ${bundlePlanID} در API موجود نیست.`}); continue; }
       const RAM = p.RAM as {amount?: number} | undefined;
       const CPU = p.CPU as {amount?: number} | undefined;
-      pairs.push({planID,bundlePlanID,resourceMonthly,bundleMonthly,totalMonthly:resourceMonthly+bundleMonthly,ramGB:RAM?.amount,cpuCores:CPU?.amount});
+      const diskGB = typeof p.volume === "number" && Number.isFinite(p.volume) && p.volume > 0 ? p.volume : undefined;
+      pairs.push({planID,bundlePlanID,resourceMonthly,bundleMonthly,totalMonthly:resourceMonthly+bundleMonthly,ramGB:RAM?.amount,cpuCores:CPU?.amount,diskGB});
     }
   }
   pairs.sort((a,b) => a.totalMonthly-b.totalMonthly || a.planID.localeCompare(b.planID) || a.bundlePlanID.localeCompare(b.bundlePlanID));

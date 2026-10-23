@@ -56,7 +56,7 @@ import { assertDiskQuoteUnchanged, quoteDisk, type DiskQuote } from "../liara/pl
 import { resolveProjectPath, sanitizeProbePaths } from "../deploy/project-path.js";
 import { humanSize, packageSource } from "../deploy/package.js";
 import { httpProbe, probeSummary, sleep } from "../probe.js";
-import { askChoice } from "../approval.js";
+import { replacementForCreateResult } from "../liara/plan-followup.js";
 import { bullets, faTime, result } from "./common.js";
 import {
   buildEnvRecoveryCardFromApi,
@@ -64,7 +64,14 @@ import {
   runGuardedAction,
 } from "./write.js";
 import { parsePlans } from "./read.js";
-import { fetchPlanCatalog, pairLabel } from '../liara/plans.js';
+import { fetchPlanCatalog } from '../liara/plans.js';
+import {
+  diskFloorGB,
+  presentPlanChoice,
+  type PlanNeed,
+  type PlanPresentation,
+} from '../liara/plan-choice.js';
+import { readSimilarUsage } from '../liara/similar-usage.js';
 import type {
   EventItem,
   Evidence,
@@ -359,15 +366,15 @@ export async function deploySourceToApp(
   };
 }
 
-/** ساخت اپ در صورت نبود + انتخاب پلن */
-async function ensureApp(
+/** ساخت اپ در صورت نبود. کارت پلن بدون تأیید اجرا نمی‌شود و خطای پلن POST دوم نمی‌زند. */
+export async function ensureApp(
   app: string,
   platform: string,
   desiredPlan?: string,
   bundlePlanID?: string,
   network?: string,
   projectPath?: string,
-): Promise<{ app: string; created: boolean; planID?: string; note?: string }> {
+): Promise<{ app: string; created: boolean; planID?: string; note?: string; code?: string }> {
   try {
     await liaraGet(EP.getProject(app));
     return { app, created: false };
@@ -380,32 +387,78 @@ async function ensureApp(
     return {
       app,
       created: false,
-      note: "⚠️ فهرست پلن‌ها از API دریافت نشد؛ ساخت اپ ممکن نیست.",
+      code: "PLAN_SELECTION_REQUIRED",
+      note: "⚠️ هیچ پلن مجازی برای ساخت اپ در فیلتر CLI (free یا شامل g2، available، منطقهٔ ایران) با قیمت واقعی پیدا نشد.",
     };
   }
 
-  const options = catalog.pairs.slice(0,3);
-  let chosen = desiredPlan && bundlePlanID ? catalog.pairs.find(p => p.planID === desiredPlan && p.bundlePlanID === bundlePlanID) : undefined;
-  if (desiredPlan || bundlePlanID) {
-    if (!chosen) throw new Error('ترکیب صریح planID و bundlePlanID باید زیر کلید دقیق API موجود و فعال باشد.');
-  } else {
-    const selection = await askChoice(`اپ «${app}» وجود ندارد؛ یک ترکیب پلن/بسته انتخاب کنید.`,
-      options.map((p,i) => ({value: `${p.planID}/${p.bundlePlanID}`, labelFa: pairLabel(p), recommended:i===0})),
-      'هزینهٔ منابع و بسته با هم نمایش داده شده؛ انتخاب به‌تنهایی مجوز ساخت نیست.');
-    chosen = options.find(p => `${p.planID}/${p.bundlePlanID}` === selection);
-    if (!chosen) return {app,created:false,note:`⏳ انتخاب ترکیب لازم است:\n${options.map(pairLabel).join('\n')}\nهر دو planID و bundlePlanID را صریحاً انتخاب کنید؛ هیچ تغییری اعمال نشد.`};
+  const detected = projectPath ? detectStack(projectPath, app) : undefined;
+  const usage = await readSimilarUsage(platform, app);
+  const need: PlanNeed = {
+    platform,
+    diskGB: diskFloorGB(detected?.disks),
+    memoryGB: usage.memoryGB,
+    cpuCores: usage.cpuCores,
+    similarApp: usage.similarApp,
+    usageNote: usage.usageNote,
+  };
+  const explicit = desiredPlan && bundlePlanID ? { planID: desiredPlan, bundlePlanID } : undefined;
+  if ((desiredPlan || bundlePlanID) && !explicit) {
+    throw new Error("ترکیب صریح planID و bundlePlanID باید با هم داده شود.");
+  }
+  const presentation = presentPlanChoice(catalog.pairs, need, explicit);
+  if (!presentation) {
+    throw new Error("ترکیب صریح planID و bundlePlanID باید زیر کلید دقیق API موجود و فعال باشد.");
   }
 
-  const out = await runGuardedAction("liara_create_app", {
+  const params = createParams(app, platform, network, projectPath, presentation, need);
+  const out = await runGuardedAction("liara_create_app", params);
+  const structured = (out.res.structuredContent ?? {}) as Record<string, unknown>;
+  const text = out.res.content[0]?.type === "text" ? out.res.content[0].text : "";
+  if (structured["ok"] === true) return { app, created: true, planID: String(structured["planID"] ?? presentation.recommended.planID) };
+
+  const follow = await replacementForCreateResult(params, { structuredContent: structured, text });
+  if (follow) {
+    const followStructured = (follow.structuredContent ?? {}) as Record<string, unknown>;
+    const followText = follow.content[0]?.type === "text" ? follow.content[0].text : "";
+    return {
+      app,
+      created: false,
+      code: String(followStructured["code"] ?? "PLAN_REJECTED"),
+      note: followText,
+    };
+  }
+
+  return {
+    app,
+    created: false,
+    planID: presentation.recommended.planID,
+    code: structured["code"] === "APPROVAL_REQUIRED" ? "APPROVAL_REQUIRED" : "PLAN_SELECTION_REQUIRED",
+    note: text,
+  };
+}
+
+function createParams(
+  app: string,
+  platform: string,
+  network: string | undefined,
+  projectPath: string | undefined,
+  presentation: PlanPresentation,
+  need: PlanNeed,
+): Record<string, unknown> {
+  return {
     name: app,
-    planID: chosen.planID,
+    planID: presentation.recommended.planID,
     platform,
-    bundlePlanID: chosen.bundlePlanID,
-    network,
+    bundlePlanID: presentation.recommended.bundlePlanID,
+    ...(network ? { network } : {}),
     ...(projectPath ? { projectPath } : {}),
-  });
-  const ok = (out.res.structuredContent as { ok?: boolean } | undefined)?.ok === true;
-  return { app, created: ok, planID: chosen.planID, note: ok ? undefined : String(out.res.content[0]?.type === 'text' ? out.res.content[0].text : '') };
+    planReasonFa: presentation.reasonFa,
+    planCheaperFa: presentation.cheaperFa,
+    planStrongerFa: presentation.strongerFa,
+    planChoices: presentation.choices,
+    planNeed: need,
+  };
 }
 
 /* ─────────────────────────── تشخیص ─────────────────────────── */
@@ -1397,7 +1450,10 @@ export function registerCompositeTools(server: McpServer): void {
         const detection = detectStack(folder, app);
         const ensured = await ensureApp(app, detection.platform, planID, bundlePlanID, network, folder);
         if (ensured.note) {
-          return result(ensured.note, { ok: false, code: ensured.note.includes('نیاز به تأیید') ? 'APPROVAL_REQUIRED' : 'PLAN_SELECTION_REQUIRED' });
+          return result(ensured.note, {
+            ok: false,
+            code: ensured.code ?? (ensured.note.includes("نیاز به تأیید") ? "APPROVAL_REQUIRED" : "PLAN_SELECTION_REQUIRED"),
+          });
         }
         if (ensured.created) {
           // ادامه با ساخت اپ

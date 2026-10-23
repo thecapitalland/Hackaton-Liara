@@ -62,12 +62,12 @@
 | بررسی | نتیجه | شاهد |
 |---|---|---|
 | `npm run typecheck` | **PASS** | `tsc -p tsconfig.json --noEmit` |
-| `npm test` | **PASS — 145/145** | 0 failed · شامل summary-memory، owned apps، projectPath، سقف بایتی، رد crash_loop، هم‌خوانی `docs/TOOLS.md` و mount دیسک از CLI |
+| `npm test` | **PASS — 152/152** | 0 failed · شامل summary-memory، owned apps، projectPath، سقف بایتی، رد crash_loop، هم‌خوانی `docs/TOOLS.md`، mount دیسک از CLI و انتخاب پلن ساخت |
 | `npm run build` | **PASS** | `dist` بازسازی شد |
 | `npm run smoke -- --offline` | **PASS** | stdio handshake واقعی، کشف **۳۴ ابزار**، ping |
 | `npm run smoke` | **خواندن لیارا PASS؛ GapGPT در این فرآیند FAIL** | list و HTTP probe قبل از شکست PASS شدند. `dns.lookup` همین فرآیند برای `api.gapgpt.app` هنوز loopback است و IP دستی اضافه نشد. curl همان نام میزبان با resolver سیستم HTTP 200 داد |
 | `npm run demo:test` | **PASS — 8/8** | health، slow، error500، leak، POST ادمین، رد query string |
-| `npm run secret-scan` | **PASS** | **۱۰۶ فایل** قابل commit؛ کلید تنظیم‌شده/private-key marker یافت نشد (detector عمومی نیست) |
+| `npm run secret-scan` | **PASS** | **۱۱۰ فایل** قابل commit؛ کلید تنظیم‌شده/private-key marker یافت نشد (detector عمومی نیست) |
 | `node dist/index.js --help` | **PASS** | command/args/cwd، متغیرها و خلاصهٔ اقدام قابل‌بازگشت |
 | `git diff --check` | **PASS** | فقط هشدارهای line-ending ویندوز |
 

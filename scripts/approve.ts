@@ -11,11 +11,16 @@ if (!rec || !check.ok || rec.status !== 'pending') {
   process.exitCode = 1;
 } else {
   console.log(`${rec.summaryFa}\n⚠️ ${rec.impact}\nهش: ${rec.hash}`);
+  const planChoices = rec.choices.filter((choice) => choice.value !== 'cancel' && choice.value !== 'approve');
   const rl = createInterface({ input: stdin, output: stdout });
-  const answer = await rl.question('برای تأیید دقیقاً yes بنویسید؛ هر پاسخ دیگر = لغو: ');
+  const answer = planChoices.length
+    ? await rl.question('برای پلن پیشنهادی دقیقاً yes بنویسید؛ برای گزینهٔ دیگر همان مقدار کارت را بنویسید؛ هر پاسخ دیگر = لغو: ')
+    : await rl.question('برای تأیید دقیقاً yes بنویسید؛ هر پاسخ دیگر = لغو: ');
   rl.close();
-  const approved = answer === 'yes';
-  setApprovalStatus(id, approved ? 'approved' : 'rejected');
+  const selected = planChoices.find((choice) => choice.value === answer);
+  const recommended = planChoices.find((choice) => choice.recommended) ?? planChoices[0];
+  const approved = answer === 'yes' || Boolean(selected);
+  setApprovalStatus(id, approved ? 'approved' : 'rejected', answer === 'yes' ? recommended?.value : selected?.value);
   writeAudit({ ts: new Date().toISOString(), tool: 'human_approval', app: rec.app, approval: approved ? 'approved' : 'rejected', result: approved ? 'ok' : 'rejected', durationMs: 0 });
   console.log(approved ? '✅ تأیید ثبت شد؛ اکنون execute_action را صدا بزنید.' : '❌ لغو شد؛ هیچ تغییری اعمال نشد.');
 }

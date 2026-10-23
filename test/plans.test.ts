@@ -21,8 +21,9 @@ function fixture() {
 
 test('کاتالوگ: فیلتر strict و join فقط بر اساس کلید دقیق پلن', () => {
   const result = parsePlanCatalog(fixture());
-  assert.deepEqual(Object.keys(result.plans.projects),['small-g2','ir-small']);
+  assert.deepEqual(Object.keys(result.plans.projects),['small-g2']);
   assert.deepEqual(Object.keys(result.plans.projectBundlePlans),['small-g2']);
+  assert.match(result.exclusions.find((item) => item.planID === 'ir-small')?.reason ?? '', /g2/);
   assert.deepEqual(result.pairs.map(p => [p.planID,p.bundlePlanID,p.totalMonthly]),[['small-g2','basic',750000],['small-g2','standard',950000]]);
   assert.equal(result.exclusions[0]?.planID,'ir-small');
   assert.ok(!result.pairs.some(p => p.bundlePlanID === 'default' || p.bundlePlanID === 'free'));

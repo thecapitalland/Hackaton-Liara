@@ -23,14 +23,16 @@ import {
   type Risk,
 } from "../approval.js";
 import type { AuditApproval } from "../audit.js";
-import { liaraGet, liaraPost } from "../liara/client.js";
+import { liaraGet, liaraPost, LiaraError } from "../liara/client.js";
 import { EP } from "../liara/endpoints.js";
 import { unwrapRelease } from "../liara/release.js";
 import { audited, bullets, faTime, result } from "./common.js";
 import { parsePlans } from "./read.js";
 import { assertPreflight } from '../liara/preflight-gate.js';
 import { redact } from '../redact.js';
-import { quoteCreate, assertQuoteUnchanged, quoteDisk, assertDiskQuoteUnchanged, pairLabel, type DiskQuote } from '../liara/plans.js';
+import { quoteCreate, assertQuoteUnchanged, quoteDisk, assertDiskQuoteUnchanged, type DiskQuote } from '../liara/plans.js';
+import { applyChosenPlan, describeCreatePlan, readPlanErrorCode, explainPlanError, type PlanChoiceItem } from '../liara/plan-choice.js';
+import { replacementForCreateResult } from '../liara/plan-followup.js';
 import { detectStack } from "../deploy/detect.js";
 import {
   formatDiskCard,
@@ -416,23 +418,42 @@ registerAction({
   risk: "high",
   impact: "ساخت اپ جدید (مصرف منابع و احتمال هزینهٔ پلن)",
   appScoped: true,
-  describe: (p) =>
-    `ساخت اپ «${String(p.name)}»: ${pairLabel(p.quote as any)}؛ شبکهٔ ${String(p.network ?? 'نامشخص')}، پلتفرم ${String(p.platform)}.`,
-  choices: () => SIMPLE_CHOICES,
+  describe: (p) => describeCreatePlan(p),
+  choices: (p) => {
+    const options = Array.isArray(p["planChoices"]) ? (p["planChoices"] as PlanChoiceItem[]) : [];
+    if (!options.length) return SIMPLE_CHOICES;
+    return [
+      ...options.map((item) => ({ value: item.value, labelFa: item.labelFa, recommended: item.recommended })),
+      { value: "cancel", labelFa: "لغو", descriptionFa: "بدون هیچ تغییری" },
+    ];
+  },
   run: async (p) => {
-    assertQuoteUnchanged(p.quote, await quoteCreate(p));
+    const selected = applyChosenPlan(p, typeof p["chosen"] === "string" ? p["chosen"] : undefined);
+    assertQuoteUnchanged(selected.quote, await quoteCreate(selected));
+    p = selected;
     const name = String(p["name"] ?? "");
     const planID = String(p["planID"] ?? "");
     const platform = String(p["platform"] ?? "node");
-    const body: Record<string, unknown> = { name, planID, platform, ...(p.bundlePlanID ? { bundlePlanID: p.bundlePlanID } : {}), ...(p.network ? {network:p.network} : {}) };
-    const { data } = await liaraPost<Record<string, unknown>>(EP.createProject, body);
-    const id = (data ?? {})["projectID"] ?? (data ?? {})["id"] ?? name;
-    registerOwnedApp(name);
-    const envCard = envCardAfterCreate(name, p["projectPath"]);
-    return {
-      text: [`✅ اپ «${name}» ساخته شد.`, `🆔 شناسه: ${String(id)}`, envCard].filter(Boolean).join("\n"),
-      structured: { ok: true, name, planID, platform, id: String(id), owned: true, raw: data },
-    };
+    const bundlePlanID = String(p["bundlePlanID"] ?? "");
+    const body: Record<string, unknown> = { name, planID, platform, ...(bundlePlanID ? { bundlePlanID } : {}), ...(p.network ? {network:p.network} : {}) };
+    try {
+      const { data } = await liaraPost<Record<string, unknown>>(EP.createProject, body);
+      const id = (data ?? {})["projectID"] ?? (data ?? {})["id"] ?? name;
+      registerOwnedApp(name);
+      const envCard = envCardAfterCreate(name, p["projectPath"]);
+      return {
+        text: [`✅ اپ «${name}» ساخته شد.`, `🆔 شناسه: ${String(id)}`, envCard].filter(Boolean).join("\n"),
+        structured: { ok: true, name, planID, platform, id: String(id), owned: true, raw: data },
+      };
+    } catch (err) {
+      const details = err instanceof LiaraError ? err.details : undefined;
+      const planError = readPlanErrorCode(details) ?? readPlanErrorCode({ message: err instanceof Error ? err.message : "" });
+      if (!planError) throw err;
+      return {
+        text: explainPlanError(planID, planError),
+        structured: { ok: false, code: "PLAN_REJECTED", planError, planID, bundlePlanID, providerResponse: details ?? null },
+      };
+    }
   },
 });
 
@@ -1056,6 +1077,10 @@ export async function runGuardedAction(
       };
     }
 
+    if (outcome.mode === "approved" && outcome.choice) {
+      params = { ...params, chosen: outcome.choice };
+    }
+
     if (outcome.mode === "pending") {
       return {
         res: result(
@@ -1077,6 +1102,55 @@ export async function runGuardedAction(
 }
 
 /* ─────────────────────────── ثبت ابزارها ─────────────────────────── */
+
+/** اجرای رکورد تأییدشده. خطای پلن کارت تازه می‌سازد و POST دوم نمی‌زند. */
+export async function executeStoredAction(approvalId: string) {
+  const rec = getApproval(approvalId);
+  if (!rec) {
+    return result("❌ درخواست تأیید پیدا نشد.", { ok: false, code: "APPROVAL_NOT_FOUND" });
+  }
+  const check = validateApproval(rec);
+  if (!check.ok) {
+    const expired = rec.status === "expired" || isApprovalExpired(rec);
+    return result(
+      expired
+        ? `❌ ${check.reason}\n🔄 برای ادامه یک کادر تأیید تازه لازم است؛ این درخواست منقضی هرگز خودکار تمدید نمی‌شود.`
+        : `❌ ${check.reason}`,
+      {
+        ok: false,
+        code: expired ? "APPROVAL_EXPIRED" : "APPROVAL_INVALID",
+        ...(expired ? { freshApprovalRequired: true } : {}),
+      },
+    );
+  }
+  const spec = getAction(rec.tool);
+  if (!spec) {
+    return result(`❌ نوع عملیات ناشناخته: ${rec.tool}`, { ok: false, code: "UNKNOWN_ACTION" });
+  }
+  actionSchemas[rec.tool]?.parse(rec.params);
+  const notAllowed = await checkScope(rec.tool, rec.params);
+  if (notAllowed) return result(notAllowed, { ok: false, code: "APP_NOT_ALLOWLISTED" });
+
+  assertPreflight();
+  const consumed = consumeApproval(approvalId);
+  if (!consumed.ok) {
+    return result(`❌ ${consumed.reason}`, { ok: false, code: "APPROVAL_INVALID" });
+  }
+
+  const runParams = rec.chosen ? { ...rec.params, chosen: rec.chosen } : rec.params;
+  const actionResult = await spec.run(runParams);
+  if (rec.tool === "liara_create_app") {
+    const follow = await replacementForCreateResult(runParams, {
+      structuredContent: (actionResult.structured ?? {}) as Record<string, unknown>,
+      text: actionResult.text,
+    });
+    if (follow) return follow;
+  }
+  return result(
+    [fa.approved, actionResult.text].join("\n"),
+    { approval: "approved", ...(actionResult.structured ?? {}) },
+  );
+}
 
 export function registerWriteTools(server: McpServer): void {
   /* ── liara_create_app ────────────────────────────────────────────── */
@@ -1383,45 +1457,7 @@ export function registerWriteTools(server: McpServer): void {
       annotations: WRITE_ANNOTATIONS,
     },
     async ({ approvalId }) =>
-      audited("execute_action", undefined, { approvalId }, async () => {
-        const rec = getApproval(approvalId);
-        if (!rec) {
-          return result("❌ درخواست تأیید پیدا نشد.", { ok: false, code: "APPROVAL_NOT_FOUND" });
-        }
-        const check = validateApproval(rec);
-        if (!check.ok) {
-          const expired = rec.status === "expired" || isApprovalExpired(rec);
-          return result(
-            expired
-              ? `❌ ${check.reason}\n🔄 برای ادامه یک کادر تأیید تازه لازم است؛ این درخواست منقضی هرگز خودکار تمدید نمی‌شود.`
-              : `❌ ${check.reason}`,
-            {
-              ok: false,
-              code: expired ? "APPROVAL_EXPIRED" : "APPROVAL_INVALID",
-              ...(expired ? { freshApprovalRequired: true } : {}),
-            },
-          );
-        }
-        const spec = getAction(rec.tool);
-        if (!spec) {
-          return result(`❌ نوع عملیات ناشناخته: ${rec.tool}`, { ok: false, code: "UNKNOWN_ACTION" });
-        }
-        actionSchemas[rec.tool]?.parse(rec.params);
-        const notAllowed = await checkScope(rec.tool, rec.params);
-        if (notAllowed) return result(notAllowed, { ok: false, code: "APP_NOT_ALLOWLISTED" });
-
-        assertPreflight();
-        const consumed = consumeApproval(approvalId);
-        if (!consumed.ok) {
-          return result(`❌ ${consumed.reason}`, { ok: false, code: "APPROVAL_INVALID" });
-        }
-
-        const actionResult = await spec.run(rec.params);
-        return result(
-          [fa.approved, actionResult.text].join("\n"),
-          { approval: "approved", ...(actionResult.structured ?? {}) },
-        );
-      }),
+      audited("execute_action", undefined, { approvalId }, () => executeStoredAction(approvalId)),
   );
 
   /* ── liara_plan_price ────────────────────────────────────────────── */
