@@ -226,9 +226,17 @@ export function applyChosenPlan(params: Record<string, unknown>, chosen: string 
 
 export function describeCreatePlan(params: Record<string, unknown>): string {
   const quote = params["quote"] as PlanPair | undefined;
-  const headline = `ساخت اپ «${String(params["name"] ?? "")}»: ${quote ? pairLabel(quote) : String(params["planID"] ?? "")}؛ شبکهٔ ${String(params["network"] ?? "نامشخص")}، پلتفرم ${String(params["platform"] ?? "")}.`;
+  const networkId = typeof params["network"] === "string" ? params["network"] : "";
+  const networkName = typeof params["networkName"] === "string" ? params["networkName"] : "";
+  const networkLine = networkId
+    ? `شبکهٔ خصوصی پیشنهادی: «${networkName || "بدون نام"}» با شناسهٔ ${networkId}.`
+    : "";
+  const headline = `ساخت اپ «${String(params["name"] ?? "")}»: ${quote ? pairLabel(quote) : String(params["planID"] ?? "")}؛ پلتفرم ${String(params["platform"] ?? "")}.`;
   return [
     headline,
+    networkLine,
+    typeof params["networkReasonFa"] === "string" ? params["networkReasonFa"] : "",
+    typeof params["networkOthersFa"] === "string" ? params["networkOthersFa"] : "",
     typeof params["planReasonFa"] === "string" ? params["planReasonFa"] : "",
     typeof params["planCheaperFa"] === "string" ? params["planCheaperFa"] : "",
     typeof params["planStrongerFa"] === "string" ? params["planStrongerFa"] : "",

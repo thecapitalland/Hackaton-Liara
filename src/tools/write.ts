@@ -120,7 +120,8 @@ const actionSchemas: Record<string, z.ZodType> = {
 
 /** ساخت اپ هنوز owned نیست؛ تأیید high خودش دروازه است. بقیه باید allowlist یا owned باشند. */
 export function appWriteAllowed(kind: string, app: string): boolean {
-  if (kind === "liara_create_app" || kind === "liara_enable_ssl") return true;
+  // ساخت شبکه POST را فقط با networkName می‌زند (network/create.js:12) و همیشه کارت high می‌خواهد.
+  if (kind === "liara_create_app" || kind === "liara_enable_ssl" || kind === "liara_create_network") return true;
   return isAllowedApp(app);
 }
 
@@ -436,13 +437,20 @@ registerAction({
     const planID = String(p["planID"] ?? "");
     const platform = String(p["platform"] ?? "node");
     const bundlePlanID = String(p["bundlePlanID"] ?? "");
+    const networkId = typeof p["network"] === "string" ? p["network"].trim() : "";
+    if (!networkId) {
+      return {
+        text: "شناسهٔ شبکه در درخواست نیست. ساخت اپ پست نشد؛ CLI هم بدون شبکه به POST نمی‌رسد.",
+        structured: { ok: false, code: "NETWORK_REQUIRED", planID, bundlePlanID },
+      };
+    }
     const readOnly = p["readOnlyRootFilesystem"];
     const body = createAppBody({
       name,
       planID,
       platform,
       bundlePlanID,
-      networkId: typeof p["network"] === "string" ? p["network"] : undefined,
+      networkId,
       readOnlyRootFilesystem: typeof readOnly === "boolean" ? readOnly : undefined,
     });
     try {

@@ -127,6 +127,7 @@ test("پیشنهاد ساخت بدون تأیید هیچ POSTی نمی‌زند"
     const method = init?.method ?? "GET";
     methods.push(method);
     if (url.pathname === "/v1/me") return new Response(JSON.stringify(catalog()), { status: 200 });
+    if (url.pathname === "/v1/networks") return new Response(JSON.stringify({ networks: [{ _id: "net-1", name: "agate-liara" }] }), { status: 200 });
     if (url.pathname === "/v1/projects") return new Response(JSON.stringify({ projects: [] }), { status: 200 });
     return new Response(JSON.stringify({ message: "missing" }), { status: 404 });
   };
@@ -137,6 +138,8 @@ test("پیشنهاد ساخت بدون تأیید هیچ POSTی نمی‌زند"
     assert.match(out.note ?? "", /small-g2/);
     assert.match(out.note ?? "", /standard-base-g2/);
     assert.match(out.note ?? "", /پلتفرم node/);
+    assert.match(out.note ?? "", /agate-liara/);
+    assert.match(out.note ?? "", /net-1/);
     assert.equal(out.note?.includes("ir-small"), false);
     assert.ok(methods.every((method) => method === "GET"));
   } finally {
@@ -180,6 +183,7 @@ test("خطای g2_plan_unavailable فقط یک POST می‌زند و کارت ج
       );
     }
     if (url.pathname === "/v1/me") return new Response(JSON.stringify(catalog()), { status: 200 });
+    if (url.pathname === "/v1/networks") return new Response(JSON.stringify({ networks: [{ _id: "net-1", name: "agate-liara" }] }), { status: 200 });
     if (url.pathname === "/v1/projects") return new Response(JSON.stringify({ projects: [] }), { status: 200 });
     return new Response(JSON.stringify({ message: "missing" }), { status: 404 });
   };
@@ -195,6 +199,7 @@ test("خطای g2_plan_unavailable فقط یک POST می‌زند و کارت ج
       planID: "small-g2",
       platform: "node",
       bundlePlanID: "basic",
+      network: "net-1",
     });
   } finally {
     globalThis.fetch = original;
@@ -245,6 +250,7 @@ test("execute_action بعد از رد پلن قوی‌تر فقط یک POST می
       planID: choice.recommended.planID,
       platform: "node",
       bundlePlanID: choice.recommended.bundlePlanID,
+      network: "net-1",
       quote: choice.recommended,
       planChoices: choice.choices,
       planNeed: emptyNeed,

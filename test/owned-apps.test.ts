@@ -15,6 +15,7 @@ test("اپ خارج از allowlist و owned رد می‌شود و اپ ثبت‌
     assert.equal(isAllowedApp("not-owned-app"), false);
     assert.equal(appWriteAllowed("liara_restart", "not-owned-app"), false);
     assert.equal(appWriteAllowed("liara_create_app", "not-owned-app"), true);
+    assert.equal(appWriteAllowed("liara_create_network", "not-owned-app"), true);
     registerOwnedApp("cursor-owned-app", dir);
     assert.equal(isAllowedApp("cursor-owned-app"), true);
     assert.equal(appWriteAllowed("liara_deploy", "cursor-owned-app"), true);

@@ -58,9 +58,11 @@ import { humanSize, packageSource } from "../deploy/package.js";
 import { httpProbe, probeSummary, sleep } from "../probe.js";
 import { replacementForCreateResult } from "../liara/plan-followup.js";
 import { bullets, faTime, result } from "./common.js";
+import { resolveDeployNetwork } from "../liara/networks.js";
 import {
   buildEnvRecoveryCardFromApi,
   extractDnsRecords,
+  getAction,
   runGuardedAction,
 } from "./write.js";
 import { parsePlans } from "./read.js";
@@ -382,6 +384,57 @@ export async function ensureApp(
     if (!(error instanceof LiaraError) || error.status !== 404) throw error;
   }
 
+  const resolved = await resolveDeployNetwork(network, "agate-liara");
+  if (resolved.kind === "unreadable") {
+    return {
+      app,
+      created: false,
+      code: "NETWORK_REQUIRED",
+      note: "فهرست شبکه‌ها از v1/networks خوانده نشد. ساخت اپ پست نشد.",
+    };
+  }
+  if (resolved.kind === "missing") {
+    return {
+      app,
+      created: false,
+      code: "NETWORK_REQUIRED",
+      note: `شبکهٔ «${resolved.given}» در فهرست v1/networks نیست. ساخت اپ پست نشد.`,
+    };
+  }
+  if (resolved.kind === "empty") {
+    if (app.length <= 2) {
+      return {
+        app,
+        created: false,
+        code: "NETWORK_REQUIRED",
+        note: "شبکه‌ای در فهرست نیست و نام اپ برای ساخت شبکه کوتاه است. ساخت اپ پست نشد.",
+      };
+    }
+    const spec = getAction("liara_create_network");
+    const out = await runGuardedAction("liara_create_network", { app, networkName: app });
+    const text = out.res.content[0]?.type === "text" ? out.res.content[0].text : "";
+    return {
+      app,
+      created: false,
+      code: "NETWORK_REQUIRED",
+      note: [
+        "فهرست شبکهٔ خصوصی خالی است. ساخت اپ پست نشد.",
+        "ساخت شبکه با اقدام liara_create_network پیشنهاد شد.",
+        `ریسک: high. اثر: ${spec?.impact ?? ""}`,
+        text,
+      ].join("\n"),
+    };
+  }
+  if (resolved.kind === "choose") {
+    const lines = resolved.networks.map((item) => `«${item.name}» با شناسهٔ ${item.id}`);
+    return {
+      app,
+      created: false,
+      code: "NETWORK_REQUIRED",
+      note: `چند شبکه هست و شبکهٔ اپ موجود مشخص نشد. ساخت اپ پست نشد.\n${lines.join("\n")}`,
+    };
+  }
+
   const catalog = await fetchPlanCatalog();
   if (!catalog.pairs.length) {
     return {
@@ -411,7 +464,12 @@ export async function ensureApp(
     throw new Error("ترکیب صریح planID و bundlePlanID باید زیر کلید دقیق API موجود و فعال باشد.");
   }
 
-  const params = createParams(app, platform, network, projectPath, presentation, need);
+  const params = createParams(app, platform, resolved.network.id, projectPath, presentation, need);
+  params["networkName"] = resolved.network.name;
+  params["networkReasonFa"] = resolved.reasonFa;
+  params["networkOthersFa"] = resolved.others.length
+    ? `شبکه‌های دیگر: ${resolved.others.map((item) => `«${item.name}» با شناسهٔ ${item.id}`).join("، ")}.`
+    : "";
   const out = await runGuardedAction("liara_create_app", params);
   const structured = (out.res.structuredContent ?? {}) as Record<string, unknown>;
   const text = out.res.content[0]?.type === "text" ? out.res.content[0].text : "";
