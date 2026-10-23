@@ -62,12 +62,12 @@
 | بررسی | نتیجه | شاهد |
 |---|---|---|
 | `npm run typecheck` | **PASS** | `tsc -p tsconfig.json --noEmit` |
-| `npm test` | **PASS — 113/113** | 0 failed · شامل allowlist ابزار agentic، سقف اطمینان، مهلت حلقه، توقف watch روی فرضیهٔ تأییدنشده، fallback و audit |
+| `npm test` | **PASS — 123/123** | 0 failed · شامل allowlist، لایهٔ Jev و fallback، سقف اطمینان، مهلت حلقه و توقف watch |
 | `npm run build` | **PASS** | `dist` بازسازی شد |
 | `npm run smoke -- --offline` | **PASS** | stdio handshake واقعی، کشف **۳۳ ابزار**، ping |
 | `npm run smoke` | **PASS** | live list + HTTP probe، فقط read-only |
 | `npm run demo:test` | **PASS — 8/8** | health، slow، error500، leak، POST ادمین، رد query string |
-| `npm run secret-scan` | **PASS** | **۸۵ فایل** قابل commit؛ کلید تنظیم‌شده/private-key marker یافت نشد (detector عمومی نیست) |
+| `npm run secret-scan` | **PASS** | **۸۸ فایل** قابل commit؛ کلید تنظیم‌شده/private-key marker یافت نشد (detector عمومی نیست) |
 | `node dist/index.js --help` | **PASS** | command/args/cwd، متغیرها و خلاصهٔ اقدام قابل‌بازگشت |
 | `git diff --check` | **PASS** | فقط هشدارهای line-ending ویندوز |
 
@@ -176,7 +176,7 @@ $ opencode mcp list
 ✅ سرور Agate-Liara فعال است.
 🔑 توکن لیارا: تنظیم شده
 📦 اپ‌های مجاز: agate-liara
-🤖 LLM: فعال (gpt-5-mini)
+🤖 LLM: فعال (gpt-5-mini)   ← مشاهدهٔ ۲۰۲۶-۱۰-۲۳؛ مدل فعلی .env نیست
 🌐 بیس API: https://api.iran.liara.ir
 ```
 
@@ -228,18 +228,38 @@ flowchart LR
 
 ## طراحی قابل گسترش
 
-تشخیص دو مسیر دارد و با `INVESTIGATE_MODE` انتخاب می‌شود:
+خواندن آزاد است. اقدام‌ها از یک registry با `riskLevel` می‌آیند و فقط از `decideApproval` عبور می‌کنند. تشخیص سه لایه دارد:
+
+```mermaid
+flowchart LR
+  A["deepseek: بررسی read-only"] --> B["Jev: انتخاب علت و راهکار"]
+  B --> C["قواعد: اعتبارسنجی و fallback"]
+  C --> D["گزارش و مسیر بررسی"]
+```
+
+مدل بررسی ابزارها را موازی صدا می‌زند. قدم اول `liara_status`، `liara_events`، `liara_releases` و `http_probe` است. ترتیب بعدی پروب، انتشار، رویداد، و فقط در صورت نیاز لاگ و متریک است. خروجی هر ابزار قبل از مدل حداکثر ۱۵۰۰ نویسه است، از `redact.ts` رد می‌شود، و لاگ فقط خطوط خطا یا مرتبط را دارد. env، بدنهٔ `/health` و `BUG_MODE` به مدل نمی‌رسند.
 
 | حالت | چه وقت | رفتار |
 |---|---|---|
-| `fixed` | پیش‌فرض وقتی LLM تنظیم نیست، یا مقدار صریح `fixed` | همان مسیر قبلی: جمع‌آوری لاگ، رویداد، متریک و پروب، سپس رتبه‌بندی. این مسیر تغییر نکرده است. |
-| `agentic` | پیش‌فرض وقتی `LLM_BASE_URL` و `LLM_API_KEY` و `LLM_MODEL` تنظیم باشند، یا مقدار صریح `agentic` | مدل با tool-calling استاندارد OpenAI فقط ابزارهای خواندنی را صدا می‌زند. |
+| `fixed` | پیش‌فرض وقتی LLM تنظیم نیست، یا مقدار صریح `fixed` | جمع‌آوری شواهد و رتبه‌بندی قاعده‌ای. این مسیر دست‌نخورده است. |
+| `agentic` | پیش‌فرض وقتی LLM تنظیم است و `INVESTIGATE_MODE` خالی یا `agentic` است | بررسی با مدل ابزار، سپس تصمیم Jev اگر `LLM_DECISION_MODEL` تنظیم باشد. |
 
-Allowlist صریح حلقه: `liara_status` (بدون نام و مقدار env)، `liara_logs`، `liara_events`، `liara_metrics`، `liara_releases`، `http_probe` روی `/`، `/health`، `/api/challenges` و `/api/status`. ابزار نوشتن، `propose_action` و `execute_action` قبل از اجرا رد می‌شوند. بودجه: حداکثر ۸ فراخوانی ابزار، ۹۰ ثانیه برای کل حلقه (قبل از هر فراخوانی مدل و هر ابزار چک می‌شود)، و حداکثر ۱۰ ثانیه برای هر فراخوانی LLM. خروجی ابزار قبل از مدل از `redact.ts` رد می‌شود؛ نام و مقدار env، بدنهٔ `/health` و `BUG_MODE` به مدل نمی‌رسند.
+Allowlist: `liara_status` بدون کلید env، `liara_logs`، `liara_events`، `liara_metrics`، `liara_releases`، `http_probe` روی `/`، `/health`، `/api/challenges` و `/api/status`. ابزار نوشتن قبل از اجرا رد می‌شود. بودجه: ۱۰ ابزار، ۱۲۰ ثانیه، ۲۰ ثانیه برای هر فراخوانی مدل، و timeout جدا برای ابزار لیارا. اگر `LLM_DECISION_MODEL` خالی باشد، JSON خود حلقه مثل قبل تصمیم می‌گیرد. وگرنه ترتیب fallback این است: Jev، JSON مدل بررسی با یک repair، مدل `LLM_MODEL_FALLBACK`، سپس قواعد. فرضیهٔ تأییدنشده اقدام خودکار `watch` نمی‌سازد.
 
-پایان حلقه یک JSON با فرضیه از همان ۷ detector و راهکار از همان فهرست مجاز است و به شواهدِ خوانده‌شده ارجاع می‌دهد. اگر آن شاهد یا detector قانونی پشت فرضیه نباشد، اطمینان کم می‌شود و `watch` از روی همان فرضیه اقدام خودکار نمی‌کند. JSON نامعتبر، خطای مدل یا تمام‌شدن بودجه به مسیر `fixed` برمی‌گردد و دلیلش در گزارش می‌آید.
+گزارش بخش **مسیر بررسی** دارد: ابزار، دلیل، خلاصه، و زمان مدل در برابر ابزار. احتمال‌های Jev در گزارش و هزینه در ابتدای همان متن است تا در خط ممیزی `diagnose` بیاید.
 
-گزارش `diagnose` بخش **مسیر بررسی** دارد: هر قدم ابزار، دلیل مدل و خلاصهٔ نتیجه است. خلاصهٔ همین مسیر در ابتدای متن است تا در خط ممیزی همان فراخوانی `diagnose` ثبت شود.
+### ارزیابی ۲۰۲۶-۱۰-۲۳
+
+چهار سناریو روی دمو، فقط‌خواندنی، با `deepseek-v4.1-flash` برای بررسی و `typesafe/jev-1.14` برای تصمیم. زمان مدل شامل فراخوانی تصمیم هم هست. میانگین ۱۱٫۳ ثانیه. سه سناریو بدون برگشت به قواعد درست بودند، پس پیش‌فرض `agentic` می‌ماند.
+
+| سناریو | علت | remedy | نتیجه | لایه | قدم | کل | مدل | ابزار | هزینه |
+|---|---|---|---|---|---|---:|---:|---:|---:|
+| leak | crash_loop | restart | نادرست | jev | 2 | 14.2s | 12.6s | 2.4s | 0.000050 |
+| slow | slow_responses | restart | درست | jev | 2 | 11.3s | 8.9s | 3.3s | 0.000050 |
+| error500 | http_5xx | restart | درست | jev | 2 | 11.9s | 11.3s | 1.6s | 0.000050 |
+| blind | http_5xx | restart | درست | jev | 2 | 7.9s | 7.1s | 1.5s | 0.000050 |
+
+leak نادرست ماند: رویدادهای kill/die به crash_loop تعبیر شدند و متریک حافظه خالی بود. blind نام `BUG_MODE` را در گزارش نداشت.
 
 ## ابزارها (۳۳ ابزار)
 

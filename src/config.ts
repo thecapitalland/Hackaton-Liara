@@ -124,6 +124,16 @@ export const config = {
   get llmModel(): string {
     return str("LLM_MODEL");
   },
+  get llmModelFallback(): string {
+    return str("LLM_MODEL_FALLBACK");
+  },
+  get llmDecisionModel(): string {
+    return str("LLM_DECISION_MODEL");
+  },
+  /** مهلت پیش‌فرض هر فراخوانی مدل در حلقهٔ بررسی. */
+  get llmTimeoutHintMs(): number {
+    return int("LLM_TIMEOUT_MS", 20_000);
+  },
   /**
    * سیاست تأیید: strict (پیش‌فرض) | balanced | auto.
    * مقدار ناشناخته امن‌ترین حالت (strict) را فعال می‌کند.

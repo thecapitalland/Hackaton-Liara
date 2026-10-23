@@ -20,6 +20,12 @@ try {
   const ping = await client.callTool({name:'ping',arguments:{}});
   assert.equal(ping.isError, undefined);
   console.log(`PASS: stdio handshake، کشف ${tools.length} ابزار و ping`);
+  if (!offline) {
+    assert.equal(config.llmEnabled, true);
+    const pingText = JSON.stringify(ping);
+    assert.match(pingText, new RegExp(config.llmModel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    console.log(`PASS: llmEnabled model=${config.llmModel} mode=${config.investigateMode}`);
+  }
   if (config.token && !offline) {
     const apps = await client.callTool({name:'liara_list_apps',arguments:{}});
     if (apps.isError) throw new Error('Live list apps failed; run npm run preflight for sanitized diagnostics.');

@@ -139,7 +139,7 @@ if (isDirectRun) {
         "شروع: ping → liara_list_apps → diagnose/watch_app",
         "متغیرها: LIARA_API_TOKEN (الزامی)، LIARA_TEAM_ID، LIARA_API_BASE، LIARA_DNS_BASE،",
         "          AGATE_ALLOWED_APPS، APPROVAL_POLICY، WATCH_APP، WATCH_INTERVAL_SEC،",
-        "          WATCH_COOLDOWN_SEC، WATCH_REMEDIATE، LLM_BASE_URL، LLM_API_KEY، LLM_MODEL، INVESTIGATE_MODE",
+        "          WATCH_COOLDOWN_SEC، WATCH_REMEDIATE، LLM_BASE_URL، LLM_API_KEY، LLM_MODEL، LLM_MODEL_FALLBACK، LLM_DECISION_MODEL، INVESTIGATE_MODE",
         "اقدام قابل بازگشت: rollback_last_env_change (risk=medium؛ در نبود مدرک → restart)",
       ].join("\n") + "\n",
     );

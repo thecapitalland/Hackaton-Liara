@@ -65,6 +65,8 @@ export interface InvestigationStep {
   tool: string;
   reason: string;
   summary: string;
+  modelMs?: number;
+  toolMs?: number;
 }
 
 export interface InvestigationTrace {
@@ -73,7 +75,13 @@ export interface InvestigationTrace {
   steps: InvestigationStep[];
   toolCalls?: number;
   elapsedMs?: number;
+  modelMs?: number;
+  toolMs?: number;
   model?: string;
+  decisionLayer?: "jev" | "deepseek" | "fallback" | "rules" | "loop";
+  decisionModel?: string;
+  probabilities?: Record<string, number>;
+  cost?: number;
 }
 
 /* ── داده‌های خام جمع‌آوری‌شده ─────────────────────────────────────── */

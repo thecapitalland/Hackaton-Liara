@@ -13,7 +13,8 @@ import { fa } from "../i18n/fa.js";
 import { liaraGet, liaraPost, uploadSource, LiaraError } from "../liara/client.js";
 import { EP } from "../liara/endpoints.js";
 import { unwrapRelease } from "../liara/release.js";
-import { investigateAgentic, type AgenticInvestigation, type AgenticToolResult } from "../diagnose/agentic.js";
+import { investigateAgentic, summarizeForModel, type AgenticInvestigation, type AgenticToolResult } from "../diagnose/agentic.js";
+import { decideIncident } from "../diagnose/decision.js";
 import { detectCauses, parseEvents, parseLogs, parseSeries } from "../diagnose/detectors.js";
 import {
   rankWithLlm,
@@ -425,9 +426,14 @@ export interface DiagnosisOptions {
   agentic?: {
     model?: string;
     now?: () => number;
-    limits?: { maxToolCalls?: number; totalMs?: number; llmTimeoutMs?: number };
+    limits?: { maxToolCalls?: number; totalMs?: number; llmTimeoutMs?: number; toolTimeoutMs?: number };
     remedies?: RemedyOption[];
+    decisionModel?: string;
+    fallbackModel?: string;
     callLlm?: (body: Record<string, unknown>, timeoutMs: number) => Promise<unknown>;
+    seed?: boolean;
+    callJev?: (body: Record<string, unknown>, timeoutMs: number) => Promise<unknown>;
+    callModel?: (model: string, messages: { role: string; content: string }[], timeoutMs: number) => Promise<unknown>;
     executeTool?: (name: string, args: Record<string, unknown>) => Promise<AgenticToolResult>;
     detect?: typeof detectCauses;
   };
@@ -757,11 +763,14 @@ function investigationLead(report: IncidentReport): string {
   const trace = report.investigation;
   const mode = !trace || trace.mode === "fixed" ? "fixed" : `agentic${trace.model ? `(${trace.model})` : ""}`;
   const fallback = trace?.fallbackReason ? ` بازگشت:${oneLine(trace.fallbackReason, 80)}` : "";
-  let text = `مسیر بررسی: ${mode}.${fallback}`.trim();
+  const layer = trace?.decisionLayer ? ` لایه:${trace.decisionLayer}` : "";
+  const cost = typeof trace?.cost === "number" ? ` هزینه:${trace.cost}` : "";
+  const timing = typeof trace?.modelMs === "number" ? ` مدل:${trace.modelMs}ms ابزار:${trace.toolMs ?? 0}ms` : "";
+  let text = `مسیر بررسی: ${mode}.${layer}${cost}${timing}${fallback}`.trim();
   const steps = trace?.steps ?? [];
   if (!steps.length) return `${text} قدم:ندارد`;
   for (const step of steps) {
-    const piece = ` | ${step.tool}؛ دلیل:${oneLine(step.reason)}؛ نتیجه:${oneLine(step.summary)}`;
+    const piece = ` | ${step.tool}؛ دلیل:${oneLine(step.reason, 24)}؛ نتیجه:${oneLine(step.summary, 28)}؛ مدل:${step.modelMs ?? 0}ms؛ ابزار:${step.toolMs ?? 0}ms`;
     if (text.length + piece.length > 370) {
       text += " | …";
       break;
@@ -819,11 +828,23 @@ export function formatIncident(report: IncidentReport, extraNotes: string[] = []
   if (report.investigation?.fallbackReason) {
     lines.push(`• بازگشت به fixed: ${report.investigation.fallbackReason}`);
   }
+  if (report.investigation?.decisionLayer) {
+    lines.push(`• لایهٔ تصمیم: ${report.investigation.decisionLayer}${report.investigation.decisionModel ? ` (${report.investigation.decisionModel})` : ""}`);
+  }
+  if (report.investigation?.probabilities) {
+    lines.push(`• احتمال‌ها: ${Object.entries(report.investigation.probabilities).map(([id, value]) => `${id}=${value}`).join("، ")}`);
+  }
+  if (typeof report.investigation?.cost === "number") {
+    lines.push(`• هزینه: ${report.investigation.cost}`);
+  }
   if (!report.investigation?.steps.length) {
     lines.push("• قدم ابزاری ثبت نشد.");
   } else {
     for (const step of report.investigation.steps) {
-      lines.push(`• ${step.tool} — دلیل: ${step.reason}`);
+      const timing = step.modelMs !== undefined || step.toolMs !== undefined
+        ? ` (مدل ${step.modelMs ?? 0}ms، ابزار ${step.toolMs ?? 0}ms)`
+        : "";
+      lines.push(`• ${step.tool} — دلیل: ${step.reason}${timing}`);
       lines.push(`   ↳ ${step.summary}`);
     }
   }
@@ -1039,6 +1060,15 @@ function bundleFromAgentic(
   };
 }
 
+function decisionSummary(attempt: AgenticInvestigation, fallback: string): string {
+  const probe = attempt.probe;
+  const samples = probe?.samples.map((sample) => `${sample.status ?? "?"}/${sample.latencyMs}ms`).join(",") ?? "none";
+  const memory = attempt.memory?.points.at(-1)?.value ?? "—";
+  const header = `پروب p50=${probe?.p50 ?? "—"} samples=${samples} حافظه=${memory} لاگ=${attempt.logs.length}`;
+  const steps = attempt.steps.map((step) => `${step.tool}: ${step.summary}`).join("\n");
+  return summarizeForModel(`${header}\n${steps || fallback}`);
+}
+
 export async function runDiagnosis(
   app: string,
   symptom?: string,
@@ -1063,15 +1093,54 @@ export async function runDiagnosis(
         limits: options.agentic?.limits,
         callLlm: options.agentic?.callLlm,
         executeTool: options.agentic?.executeTool,
+        seed: options.agentic?.seed ?? !options.agentic?.executeTool,
         detect: options.agentic?.detect,
       });
+      const decisionModel = options.agentic?.decisionModel ?? config.llmDecisionModel;
+      const useDecision = Boolean(options.agentic?.callJev || options.agentic?.decisionModel || (!options.agentic?.callLlm && decisionModel));
+      const decisionStarted = Date.now();
+      const decision = useDecision
+        ? await decideIncident({
+            decisionModel,
+            primaryModel: options.agentic?.model ?? config.llmModel,
+            fallbackModel: options.agentic?.fallbackModel ?? config.llmModelFallback,
+            summary: decisionSummary(attempt, symptom || app),
+            remedies: remedy.remedies,
+            evidenceIds: attempt.evidence.map((item) => item.id),
+            logs: attempt.logs,
+            events: attempt.events,
+            cpu: attempt.cpu,
+            memory: attempt.memory,
+            probe: attempt.probe ?? null,
+            detect: options.agentic?.detect,
+            callJev: options.agentic?.callJev,
+            callModel: options.agentic?.callModel,
+            timeoutMs: options.agentic?.limits?.llmTimeoutMs,
+            loop: attempt.ok
+              ? { ok: true, hypotheses: attempt.hypotheses, selectedRemedy: attempt.selectedRemedy, remedySource: attempt.remedySource }
+              : { ok: false, hypotheses: [], remedySource: "rules" },
+          })
+        : null;
+      if (decision?.ok) {
+        attempt.ok = true;
+        attempt.hypotheses = decision.hypotheses;
+        attempt.selectedRemedy = decision.selectedRemedy;
+        attempt.remedySource = decision.remedySource;
+        attempt.notes.push(`لایهٔ تصمیم: ${decision.layer}${decision.model ? ` (${decision.model})` : ""}`);
+      }
       trace = {
         mode: attempt.ok ? "agentic" : "fixed",
         steps: attempt.steps,
         toolCalls: attempt.toolCalls,
         elapsedMs: attempt.elapsedMs,
-        model: attempt.model,
-        ...(attempt.ok ? {} : { fallbackReason: attempt.reason ?? "بازگشت به مسیر fixed." }),
+        modelMs: (attempt.modelMs ?? 0) + (useDecision ? Math.max(0, Date.now() - decisionStarted) : 0),
+        toolMs: attempt.toolMs,
+        model: decision?.model ?? attempt.model,
+        decisionLayer: decision?.layer ?? (attempt.ok ? "loop" : "rules"),
+        decisionModel: decision?.model,
+        probabilities: decision?.probabilities,
+        cost: decision?.cost,
+        ...(attempt.ok ? {} : { fallbackReason: decision?.reason ?? attempt.reason ?? "بازگشت به مسیر fixed." }),
       };
       if (attempt.ok) {
         bundle = bundleFromAgentic(app, attempt, remedy, options);
@@ -1135,6 +1204,8 @@ export async function runDiagnosis(
 
   const analysisLine = trace.fallbackReason
     ? `🧠 منبع تحلیل: بازگشت به مسیر fixed — ${trace.fallbackReason}`
+    : trace.decisionLayer && trace.decisionLayer !== "loop" && trace.decisionLayer !== "rules"
+      ? `🧠 منبع تحلیل: ${trace.decisionLayer}${trace.decisionModel ? ` (${trace.decisionModel})` : ""} — فرضیه‌ها با detectorهای قانونی سنجیده شدند`
     : trace.mode === "agentic"
       ? `🧠 منبع تحلیل: حلقهٔ agentic${trace.model ? ` (${trace.model})` : ""} — فرضیه‌ها با detectorهای قانونی سنجیده شدند`
       : bundle.llmUsed

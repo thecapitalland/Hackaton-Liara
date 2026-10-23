@@ -7,9 +7,14 @@ LangGraph خارج از محدودهٔ این ارائه و کار آینده ا
 ## Agentic investigate · 2026-10-23
 - `INVESTIGATE_MODE=agentic|fixed`. Default is agentic only when `LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL` are set; otherwise fixed. The previous detector path is unchanged.
 - The model may call only `liara_status` (no env keys), `liara_logs`, `liara_events`, `liara_metrics`, `liara_releases`, and `http_probe` on `/`, `/health`, `/api/challenges`, `/api/status`. Write tools are rejected before execution.
-- Budgets: 8 tool calls, 90 seconds, 10 seconds per LLM call. Tool output is redacted and env-blind. Invalid JSON, errors, and exhausted budget fall back to fixed and the reason is in the report section «مسیر بررسی».
+- First-loop budgets were 8 tool calls, 90 seconds, and 10 seconds per LLM call. The decision-layer section below is the current budget. Tool output is redacted and env-blind. Invalid JSON, errors, and exhausted budget fall back to fixed and the reason is in the report section «مسیر بررسی».
 - Read-only comparison, no Liara write, `.env` not modified. `gpt-5-mini` on BoxAPI finished three scenarios as unsupported `crash_loop` (confidence 0.35) and timed out on leak. `deepseek-v4.1-flash` on `api.gapgpt.app` has tool calling; leak matched `memory_leak`/`oom` inside the loop, and slow/error500/blind fell back to fixed which named the expected detector. Reports did not contain `BUG_MODE`.
-- Gates: typecheck PASS, `npm test` 113/113, build PASS, offline and live smoke PASS, `demo:test` 8/8, secret-scan PASS (85 files). Unconfirmed agentic hypotheses do not auto-remediate.
+- Gates for that loop: typecheck PASS, `npm test` 113/113, build PASS, offline and live smoke PASS, `demo:test` 8/8, secret-scan PASS (85 files). Unconfirmed agentic hypotheses do not auto-remediate.
+
+## Decision layer · 2026-10-23
+- Parallel tool calls. Each tool summary is at most 1500 characters and passes through `redact.ts`. Budgets: 10 tools, 120 seconds, 20 seconds per model call, separate Liara tool timeout. Step timing is model time versus tool time.
+- After evidence, `LLM_DECISION_MODEL` (`typesafe/jev-1.14`) is called at `{LLM_BASE_URL}/systemone`. Fallback is deepseek JSON with one repair, then `gpt-4.1-mini`, then rules. An empty decision model keeps the previous loop JSON.
+- Read-only eval, no Liara write. Mean 11.3s after model time includes the decision call. slow, error500, and blind were correct on the Jev layer. leak was `crash_loop` because kill/die events were read and memory metrics were empty. Three of four were correct without a rules fallback, so the default stays agentic. The table is in README.
 
 ## Feature freeze · 2026-10-23
 - Fail-closed elicitation, watch 5xx/timeout/outage persistence, demo-site POST admin header, injection evidence, log redaction, and a single audit line per tool call.

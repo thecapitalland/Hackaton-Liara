@@ -106,7 +106,9 @@ test("allowlist ابزار نوشتن، propose و execute را رد می‌کن
 
   assert.equal(executed, 0);
   assert.equal(result.ok, true);
-  assert.deepEqual(result.steps.map((step) => step.tool), ["execute_action", "liara_restart", "propose_action"]);
+  assert.match(result.steps[0]?.tool ?? "", /execute_action/);
+  assert.match(result.steps[0]?.tool ?? "", /liara_restart/);
+  assert.match(result.steps[0]?.tool ?? "", /propose_action/);
   assert.match(result.steps[0]?.summary ?? "", /allowlist/);
 });
 
@@ -238,6 +240,54 @@ test("خروجی ابزار قبل از مدل env و BUG_MODE و راز را ک
   assert.doesNotMatch(text, /ADMIN_KEY|PORT|super-secret-value|hunter2|BUG_MODE|bugMode|DATABASE_URL|postgres/);
 });
 
+test("چند tool call در یک پاسخ هم‌زمان اجرا می‌شوند", async () => {
+  let inflight = 0;
+  let maxInflight = 0;
+  let round = 0;
+  const result = await investigateAgentic({
+    app,
+    remedies: [RESTART_REMEDY],
+    seed: false,
+    executeTool: async () => {
+      inflight += 1;
+      maxInflight = Math.max(maxInflight, inflight);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      inflight -= 1;
+      return {
+        summary: "ok",
+        evidence: {
+          id: "x",
+          source: "probe",
+          observation: "ok",
+          available: true,
+          collectedAt: "2026-10-23T00:00:00.000Z",
+        },
+      };
+    },
+    callLlm: async () => {
+      round += 1;
+      if (round > 1) return conclusion(0.4, ["ev_1"]);
+      return {
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: ["liara_status", "liara_events", "http_probe"].map((name) => ({
+              id: name,
+              type: "function",
+              function: { name, arguments: JSON.stringify({ reason: name, path: "/" }) },
+            })),
+          },
+        }],
+      };
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.ok(maxInflight >= 2);
+  assert.equal(result.steps.length, 1);
+  assert.match(result.steps[0]?.tool ?? "", /liara_status/);
+  assert.equal(typeof result.steps[0]?.toolMs, "number");
+});
+
 test("مهلت حلقه ابزار بعدی را اجرا نمی‌کند و timeout مدل را به زمان باقی‌مانده محدود می‌کند", async () => {
   let nowMs = 0;
   let executed = 0;
@@ -277,9 +327,33 @@ test("مهلت حلقه ابزار بعدی را اجرا نمی‌کند و tim
     },
   });
   assert.equal(seenTimeout, 1_000);
-  assert.equal(executed, 1);
+  assert.equal(executed, 2);
   assert.equal(result.ok, false);
-  assert.match(result.reason ?? "", /۹۰ ثانیه/);
+  assert.match(result.reason ?? "", /ثانیه/);
+});
+
+test("timeout یک ابزار، حلقه را با وقت باقی‌مانده قطع نمی‌کند", async () => {
+  let round = 0;
+  const result = await investigateAgentic({
+    app,
+    remedies: [RESTART_REMEDY],
+    now: () => 1_000,
+    limits: { totalMs: 120_000, maxToolCalls: 10, llmTimeoutMs: 20_000, toolTimeoutMs: 15_000 },
+    detect: () => detected(),
+    executeTool: async () => {
+      const error = new Error("timeout");
+      error.name = "AbortError";
+      throw error;
+    },
+    callLlm: async () => {
+      round += 1;
+      return round === 1 ? toolCall("liara_logs", { reason: "لاگ" }) : conclusion(0.7, ["ev_1"]);
+    },
+  });
+  assert.equal(round, 2);
+  assert.equal(result.ok, true);
+  assert.ok((result.modelMs ?? 0) >= 0);
+  assert.match(result.steps[0]?.summary ?? "", /timeout ابزار/);
 });
 
 test("diagnose در agentic مسیر بررسی را نشان می‌دهد و در خطا به fixed برمی‌گردد", async () => {

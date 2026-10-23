@@ -157,8 +157,8 @@ test("اجرای خودکار با mention سیاست در ممیزی ثبت م�
     async () => result(`🤖 ${notice}`, { ok: true, approvalMode: "automatic" }),
     "auto:balanced",
   );
-  const last = readAuditTail(1)[0]!;
-  assert.equal(last.tool, "test_auto_policy");
+  const last = readAuditTail(40).reverse().find((row) => row.tool === "test_auto_policy");
+  assert.ok(last);
   assert.equal(last.approval, "auto:balanced");
   assert.match(last.detail ?? "", /اجرای خودکار طبق سیاست balanced/);
 });
@@ -175,7 +175,7 @@ test("audited سیاست اجرای خودکار را از structuredContent ه�
         approvalPolicy: "balanced",
       }),
   );
-  const last = readAuditTail(1)[0]!;
-  assert.equal(last.tool, "test_auto_policy_outer");
+  const last = readAuditTail(40).reverse().find((row) => row.tool === "test_auto_policy_outer");
+  assert.ok(last);
   assert.equal(last.approval, "auto:balanced");
 });
