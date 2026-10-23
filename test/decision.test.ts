@@ -335,3 +335,293 @@ test("baseline سالم و ENV_UPDATE و 5xx فقط rollback را به Jev می�
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+test("summary-memory صعودی crash_loop را رد می‌کند و memory_leak را observed نگه می‌دارد", async () => {
+  const summary = "summary-memory samples=2 rising=true over80=false last=90 planMB=512";
+  const memory = {
+    name: "memory",
+    unit: "MB",
+    points: [
+      { ts: null, value: 40 },
+      { ts: null, value: 90 },
+    ],
+  };
+  const events = [
+    { ts: "2026-10-23T12:00:00.000Z", type: "die", message: "die" },
+    { ts: "2026-10-23T12:00:01.000Z", type: "kill", message: "kill" },
+    { ts: "2026-10-23T12:00:02.000Z", type: "restart", message: "app restarted" },
+  ];
+  const rejected = await decideIncident({
+    decisionModel: "typesafe/jev-1.14",
+    primaryModel: "m",
+    fallbackModel: "m",
+    summary,
+    remedies: [RESTART_REMEDY],
+    evidenceIds: ["ev_1"],
+    logs: [],
+    events,
+    memory,
+    loop: {
+      ok: true,
+      hypotheses: [{
+        id: "crash_loop",
+        rank: 1,
+        cause: "کرش",
+        confidence: 0.8,
+        evidenceIds: ["ev_1"],
+        kind: "observed",
+        remedies: ["restart"],
+        remedyText: ["ری‌استارت"],
+      }],
+      selectedRemedy: "restart",
+      remedySource: "llm",
+    },
+    callJev: async () => ({
+      answers: { hypothesis: { choice: "crash_loop", confidence: 0.8 }, remedy: { choice: "restart" } },
+    }),
+    callModel: async () => {
+      throw new Error("no-network");
+    },
+  });
+  assert.equal(rejected.ok, false);
+  assert.notEqual(rejected.hypotheses[0]?.id, "crash_loop");
+
+  const accepted = await decideIncident({
+    decisionModel: "typesafe/jev-1.14",
+    summary,
+    remedies: [RESTART_REMEDY],
+    evidenceIds: ["ev_1"],
+    logs: [],
+    events,
+    memory,
+    callJev: async () => ({
+      answers: { hypothesis: { choice: "memory_leak", confidence: 0.8 }, remedy: { choice: "restart" } },
+    }),
+  });
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.hypotheses[0]?.id, "memory_leak");
+  assert.equal(accepted.hypotheses[0]?.kind, "observed");
+});
+
+test("سری بایتی بالای ۸۰٪ پلن memory_leak را observed می‌کند", async () => {
+  const result = await decideIncident({
+    decisionModel: "typesafe/jev-1.14",
+    summary: "حافظه ثابت و بالا",
+    remedies: [RESTART_REMEDY],
+    evidenceIds: ["ev_1"],
+    logs: [],
+    events: [],
+    memory: {
+      name: "memory",
+      unit: "bytes",
+      points: [
+        { ts: null, value: 471_859_200 },
+        { ts: null, value: 471_859_200 },
+      ],
+    },
+    plan: { ramMB: 512 },
+    callJev: async () => ({
+      answers: { hypothesis: { choice: "memory_leak", confidence: 0.8 }, remedy: { choice: "restart" } },
+    }),
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.hypotheses[0]?.id, "memory_leak");
+  assert.equal(result.hypotheses[0]?.kind, "observed");
+});
+
+test("حلقهٔ crash_loop بعد از رد تصمیم در گزارش diagnose نمی‌ماند", async () => {
+  const now = new Date().toISOString();
+  const events = [
+    { ts: now, type: "die", message: "die" },
+    { ts: now, type: "kill", message: "kill" },
+    { ts: now, type: "restart", message: "app restarted" },
+  ];
+  const memory = {
+    name: "memory",
+    unit: "MB",
+    points: [
+      { ts: null, value: 100 },
+      { ts: null, value: 180 },
+    ],
+  };
+  let round = 0;
+  const run = await runDiagnosis("agate-liara", "حافظه بالا رفته", {
+    investigateMode: "agentic",
+    incidentAt: now,
+    captureBaseline: false,
+    envChange: null,
+    logs: [],
+    events,
+    cpu: null,
+    memory,
+    plan: { ramMB: 512 },
+    probe: { error: "probe skipped" },
+    agentic: {
+      seed: false,
+      remedies: [RESTART_REMEDY],
+      executeTool: async () => ({
+        summary: "summary-memory samples=2 rising=true over80=false last=180 planMB=512",
+        evidence: {
+          id: "x",
+          source: "events",
+          observation: "kill",
+          available: true,
+          collectedAt: now,
+        },
+        events,
+        memory,
+      }),
+      callLlm: async () => {
+        round += 1;
+        if (round === 1) {
+          return {
+            choices: [{
+              message: {
+                content: null,
+                tool_calls: [{ id: "e", type: "function", function: { name: "liara_events", arguments: JSON.stringify({ reason: "رویداد" }) } }],
+              },
+            }],
+          };
+        }
+        return {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                hypotheses: [{ id: "crash_loop", rank: 1, confidence: 0.8, evidenceIds: ["ev_1"] }],
+                remedy: "restart",
+              }),
+            },
+          }],
+        };
+      },
+      callJev: async () => ({
+        answers: { hypothesis: { choice: "crash_loop", confidence: 0.8 }, remedy: { choice: "restart" } },
+      }),
+      callModel: async () => jsonChoice("crash_loop"),
+    },
+  });
+  assert.equal(run.report.hypotheses.some((item) => item.id === "crash_loop"), false);
+});
+
+test("crash_loop غیرِاول هم با kill و حافظهٔ بالا از حلقه حذف می‌شود", async () => {
+  const hypothesis = (id: "memory_leak" | "crash_loop"): Hypothesis => ({
+    id,
+    rank: id === "memory_leak" ? 1 : 2,
+    cause: id,
+    confidence: 0.8,
+    evidenceIds: ["ev_1"],
+    kind: "observed",
+    remedies: ["restart"],
+    remedyText: ["ری‌استارت"],
+  });
+  const result = await decideIncident({
+    decisionModel: "typesafe/jev-1.14",
+    primaryModel: "m",
+    fallbackModel: "m",
+    summary: "summary-memory samples=2 rising=true over80=false last=180 planMB=512",
+    remedies: [RESTART_REMEDY],
+    evidenceIds: ["ev_1"],
+    logs: [],
+    events: [
+      { ts: "2026-10-23T12:00:00.000Z", type: "kill", message: "kill" },
+      { ts: "2026-10-23T12:00:01.000Z", type: "restart", message: "app restarted" },
+    ],
+    memory: {
+      name: "memory",
+      unit: "MB",
+      points: [
+        { ts: null, value: 100 },
+        { ts: null, value: 180 },
+      ],
+    },
+    plan: { ramMB: 512 },
+    loop: {
+      ok: true,
+      hypotheses: [hypothesis("memory_leak"), hypothesis("crash_loop")],
+      selectedRemedy: "restart",
+      remedySource: "llm",
+    },
+    callJev: async () => ({
+      answers: { hypothesis: { choice: "crash_loop", confidence: 0.8 }, remedy: { choice: "restart" } },
+    }),
+    callModel: async () => {
+      throw new Error("no-network");
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.hypotheses.map((item) => item.id), ["memory_leak"]);
+});
+
+test("fallback تشخیص سری حافظهٔ حلقه را نگه می‌دارد و crash_loop را برنمی‌گرداند", async () => {
+  const now = new Date().toISOString();
+  const events = [
+    { ts: now, type: "die", message: "die" },
+    { ts: now, type: "kill", message: "kill" },
+    { ts: now, type: "restart", message: "app restarted" },
+  ];
+  const memory = {
+    name: "memory",
+    unit: "MB" as const,
+    points: [
+      { ts: null, value: 100 },
+      { ts: null, value: 180 },
+    ],
+  };
+  let round = 0;
+  const run = await runDiagnosis("agate-liara", "حافظه بالا رفته", {
+    investigateMode: "agentic",
+    incidentAt: now,
+    captureBaseline: false,
+    envChange: null,
+    logs: [],
+    cpu: null,
+    plan: { ramMB: 512 },
+    probe: { error: "probe skipped" },
+    agentic: {
+      seed: false,
+      remedies: [RESTART_REMEDY],
+      executeTool: async () => ({
+        summary: "summary-memory samples=2 rising=true over80=false last=180 planMB=512",
+        evidence: {
+          id: "x",
+          source: "events",
+          observation: "kill",
+          available: true,
+          collectedAt: now,
+        },
+        events,
+        memory,
+        plan: { ramMB: 512 },
+      }),
+      callLlm: async () => {
+        round += 1;
+        if (round === 1) {
+          return {
+            choices: [{
+              message: {
+                content: null,
+                tool_calls: [{ id: "e", type: "function", function: { name: "liara_events", arguments: JSON.stringify({ reason: "رویداد" }) } }],
+              },
+            }],
+          };
+        }
+        return {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                hypotheses: [{ id: "crash_loop", rank: 1, confidence: 0.8, evidenceIds: ["ev_1"] }],
+                remedy: "restart",
+              }),
+            },
+          }],
+        };
+      },
+      callJev: async () => ({
+        answers: { hypothesis: { choice: "crash_loop", confidence: 0.8 }, remedy: { choice: "restart" } },
+      }),
+      callModel: async () => jsonChoice("crash_loop"),
+    },
+  });
+  assert.equal(run.report.hypotheses.some((item) => item.id === "crash_loop"), false);
+  assert.equal(run.report.hypotheses.some((item) => item.id === "memory_leak"), true);
+});

@@ -71,6 +71,59 @@ export function assertQuoteUnchanged(approved: unknown, fresh: PlanPair): void {
   }
 }
 
+export interface DiskQuote {
+  name: string;
+  size: string;
+  monthly: number | null;
+  note: string;
+}
+
+const DISK_PRICE_KEYS = new Set(["diskPrice", "pricePerGB", "diskMonthly", "disk_price"]);
+
+/** فقط کلیدهای صریح قیمت دیسک. اگر نباشند null برمی‌گردد و عددی ساخته نمی‌شود. */
+export function findDiskMonthly(raw: unknown): number | null {
+  const stack: unknown[] = [raw];
+  const seen = new Set<unknown>();
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current || typeof current !== "object" || seen.has(current)) continue;
+    seen.add(current);
+    for (const [key, value] of Object.entries(current as Record<string, unknown>)) {
+      if (DISK_PRICE_KEYS.has(key) && typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+      if (value && typeof value === "object") stack.push(value);
+    }
+  }
+  return null;
+}
+
+export async function quoteDisk(params: Record<string, unknown>): Promise<DiskQuote> {
+  const name = String(params["name"] ?? "");
+  const size = String(params["size"] ?? "");
+  let monthly: number | null = null;
+  try {
+    const { data } = await liaraGet(EP.me);
+    monthly = findDiskMonthly(data);
+  } catch {
+    monthly = null;
+  }
+  return {
+    name,
+    size,
+    monthly,
+    note:
+      monthly === null
+        ? "در GET /v1/me کلید قیمت دیسک (diskPrice یا pricePerGB یا diskMonthly) پیدا نشد؛ عددی حدس زده نشد."
+        : "عدد قیمت از کلید صریح دیسک در GET /v1/me خوانده شد؛ واحد را همان API تعیین می‌کند.",
+  };
+}
+
+export function assertDiskQuoteUnchanged(approved: unknown, fresh: DiskQuote): void {
+  const old = approved as DiskQuote | undefined;
+  if (!old || old.name !== fresh.name || old.size !== fresh.size || old.monthly !== fresh.monthly) {
+    throw new Error("اندازه یا قیمت دیسک نسبت به پیشنهاد تأییدشده تغییر کرده؛ هیچ POSTی ارسال نشد.");
+  }
+}
+
 export function pairLabel(p: PlanPair): string {
   return `${p.planID}/${p.bundlePlanID} — ${p.totalMonthly.toLocaleString('fa-IR')} تومان/ماه (منابع ${p.resourceMonthly.toLocaleString('fa-IR')} + بسته ${p.bundleMonthly.toLocaleString('fa-IR')})`;
 }

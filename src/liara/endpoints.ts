@@ -31,6 +31,8 @@ export const EP = {
   restart: (name: string) => `/v1/projects/${enc(name)}/actions/restart`,
   scale: (name: string) => `/v1/projects/${enc(name)}/actions/scale`,
   resize: (name: string) => `/v1/projects/${enc(name)}/resize`,
+  /** POST ساخت دیسک. منبع: openapi.liara.ir/paas.yaml operationId createDisk. */
+  createDisk: (name: string) => `/v1/projects/${enc(name)}/disks`,
 
   /* ── مشاهده ──────────────────────────────────────────────────────── */
   logsV1: (name: string) => `/v1/projects/${enc(name)}/logs`,

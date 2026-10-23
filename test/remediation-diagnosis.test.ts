@@ -330,6 +330,7 @@ test("LLM فهرست راهکارهای مجاز را می‌بیند و می‌
       hypotheses: [hypothesis()],
       evidence: evidence(),
       remedies: [ROLLBACK_ENV_REMEDY, RESTART_REMEDY],
+      confirmHost: async () => {},
     });
     assert.equal(result.usedLlm, true);
     assert.equal(result.selectedRemedy, "rollback_last_env_change");
@@ -379,6 +380,7 @@ test("راهکار خارج از فهرست مجاز LLM نادیده گرفته
       hypotheses: [hypothesis()],
       evidence: evidence(),
       remedies: [RESTART_REMEDY],
+      confirmHost: async () => {},
     });
     assert.equal(result.usedLlm, true);
     assert.equal(result.selectedRemedy, undefined);

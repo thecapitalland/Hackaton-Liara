@@ -32,6 +32,7 @@ test("سرور MCP ابزارهای مورد انتظار را معرفی می�
     "http_probe",
     "audit_tail",
     "liara_create_app",
+    "liara_create_disk",
     "liara_deploy",
     "liara_set_env",
     "rollback_last_env_change",

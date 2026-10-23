@@ -4,7 +4,7 @@
  * منبع تنظیمات: env vars ← (اولویت بالا) سپس فایل `.env` در cwd سرویس
  * و در ریشه پکیج. مقادیر واقعی هرگز لاگ یا commit نمی‌شوند.
  */
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
@@ -90,9 +90,15 @@ export const config = {
       .map((s) => s.trim())
       .filter(Boolean);
   },
-  /** مسیر فایل‌های state (لاگ ممیزی، تأییدها، baseline) */
+  /**
+   * مسیر state (ممیزی، تأیید، baseline، owned-apps).
+   * AGATE_STATE_DIR اگر مطلق یا نسبی باشد resolve می‌شود؛ وگرنه ریشهٔ پکیج/.agate.
+   * به cwd پروژه‌ای که کاربر از آن حرف می‌زند وابسته نیست.
+   */
   get stateDir(): string {
-    return path.join(process.cwd(), ".agate");
+    const override = str("AGATE_STATE_DIR");
+    if (override) return path.resolve(override);
+    return path.join(PACKAGE_ROOT, ".agate");
   },
   /** مهلت پیش‌فرض درخواست (میلی‌ثانیه) */
   get requestTimeoutMs(): number {
@@ -171,7 +177,38 @@ export function hasToken(): boolean {
   return config.token.length > 0;
 }
 
-/** آیا اپ در لیست مجاز است؟ */
+function ownedAppsFile(dir = config.stateDir): string {
+  return path.join(dir, "owned-apps.json");
+}
+
+/** اپ‌هایی که خودِ MCP با liara_create_app ساخته و در state ثبت شده‌اند. */
+export function readOwnedApps(dir = config.stateDir): string[] {
+  const file = ownedAppsFile(dir);
+  if (!existsSync(file)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as { apps?: unknown };
+    if (!Array.isArray(parsed.apps)) return [];
+    return [
+      ...new Set(
+        parsed.apps.filter((item): item is string => typeof item === "string" && item.trim().length > 0),
+      ),
+    ];
+  } catch {
+    return [];
+  }
+}
+
+/** ثبت اپ ساخته‌شده. فقط بعد از POST موفق liara_create_app صدا زده می‌شود. */
+export function registerOwnedApp(app: string, dir = config.stateDir): void {
+  const name = app.trim();
+  if (!name) return;
+  const apps = new Set(readOwnedApps(dir));
+  apps.add(name);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(ownedAppsFile(dir), JSON.stringify({ apps: [...apps].sort() }, null, 2), "utf8");
+}
+
+/** allowlist یا owned-apps.json. اپ دیگر برای نوشتن رد می‌شود. */
 export function isAllowedApp(app: string): boolean {
-  return config.allowedApps.includes(app);
+  return config.allowedApps.includes(app) || readOwnedApps().includes(app);
 }

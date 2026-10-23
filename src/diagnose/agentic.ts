@@ -11,9 +11,13 @@ import { liaraGet } from "../liara/client.js";
 import { EP } from "../liara/endpoints.js";
 import { httpProbe } from "../probe.js";
 import { redact } from "../redact.js";
-import type { Evidence, EventItem, Hypothesis, InvestigationStep, LogLine, ProbeResult, RemedyKind, Series } from "../types.js";
+import type { Evidence, EventItem, Hypothesis, InvestigationStep, LogLine, PlanLimits, ProbeResult, RemedyKind, Series } from "../types.js";
+import { fetchPlanCatalog } from "../liara/plans.js";
 import { detectCauses, DETECTOR_IDS, INJECTION_CONFIDENCE_CAP, parseEvents, parseLogs, parseSeries } from "./detectors.js";
+import { rememberSummary } from "./summary-history.js";
+import { assertPublicHostname } from "./resolver.js";
 import { stripBugMode, type RemedyOption } from "./llm.js";
+import { sanitizeProbePaths } from "../deploy/project-path.js";
 
 export const AGENTIC_READ_TOOLS = [
   "liara_status",
@@ -59,6 +63,7 @@ export interface AgenticToolResult {
   events?: EventItem[];
   cpu?: Series | null;
   memory?: Series | null;
+  plan?: PlanLimits | null;
   probe?: ProbeResult;
 }
 
@@ -78,6 +83,8 @@ export interface InvestigateArgs {
   limits?: { maxToolCalls?: number; totalMs?: number; llmTimeoutMs?: number; toolTimeoutMs?: number };
   /** قدم اولِ هم‌زمان. در تست‌های تزریقی پیش‌فرض خاموش است. */
   seed?: boolean;
+  /** مسیرهای پروب علاوه بر مسیرهای پیش‌فرض. از liara.json یا پارامتر diagnose. */
+  probePaths?: string[];
   callLlm?: (body: Record<string, unknown>, timeoutMs: number) => Promise<unknown>;
   executeTool?: (name: string, args: Record<string, unknown>) => Promise<AgenticToolResult>;
   detect?: typeof detectCauses;
@@ -100,6 +107,7 @@ export interface AgenticInvestigation {
   events: EventItem[];
   cpu: Series | null;
   memory: Series | null;
+  plan: PlanLimits | null;
   probe?: ProbeResult;
   notes: string[];
 }
@@ -113,6 +121,7 @@ export function gateAgenticTool(
   app: string,
   name: string,
   args: Record<string, unknown>,
+  probePaths: readonly string[] = [],
 ): { ok: true } | { ok: false; reason: string } {
   if (!isAgenticToolAllowed(name)) {
     return { ok: false, reason: `ابزار «${name}» در allowlist حلقهٔ بررسی نیست.` };
@@ -120,7 +129,7 @@ export function gateAgenticTool(
   if (!sameApp(app, args["app"] ?? args["target"])) {
     return { ok: false, reason: "ابزار فقط روی همین اپ مجاز است." };
   }
-  if (name === "http_probe" && !allowedProbePath(args["path"])) {
+  if (name === "http_probe" && !allowedProbePath(args["path"], probePaths)) {
     return { ok: false, reason: "مسیر پروب در فهرست مجاز اپ نیست." };
   }
   return { ok: true };
@@ -134,7 +143,7 @@ export function renderForModel(value: unknown): string {
   return text.length > 4000 ? `${text.slice(0, 4000)}…` : text;
 }
 
-const MEMORY_SIGNAL = /heap|\[BUG\]\s*leak|heap out of memory|OOMKilled/i;
+const MEMORY_SIGNAL = /heap|\[BUG\]\s*leak|heap out of memory|OOMKilled|summary-memory/i;
 
 /** خلاصهٔ کوتاهِ هر ابزار قبل از رفتن به مدل. خطوط حافظه قبل از برش ۱۵۰۰ نویسه می‌مانند. */
 export function summarizeForModel(value: unknown): string {
@@ -164,7 +173,8 @@ export async function investigateAgentic(args: InvestigateArgs): Promise<Agentic
   const started = now();
   const deadline = started + limits.totalMs;
   const detect = args.detect ?? detectCauses;
-  const executeTool = args.executeTool ?? ((name, toolArgs) => defaultExecuteTool(args.app, name, toolArgs));
+  const probePaths = sanitizeProbePaths(args.probePaths);
+  const executeTool = args.executeTool ?? ((name, toolArgs) => defaultExecuteTool(args.app, name, toolArgs, probePaths));
   const model = args.model ?? config.llmModel;
   const evidence: Evidence[] = [];
   const steps: InvestigationStep[] = [];
@@ -172,13 +182,14 @@ export async function investigateAgentic(args: InvestigateArgs): Promise<Agentic
   const events: EventItem[] = [];
   let cpu: Series | null = null;
   let memory: Series | null = null;
+  let plan: PlanLimits | null = null;
   let probe: ProbeResult | undefined;
   let toolCalls = 0;
   const messages: AgenticLlmMessage[] = [
     { role: "system", content: systemPrompt(args.remedies) },
     { role: "user", content: renderForModel({ app: args.app, symptom: args.symptom ?? "" }) },
   ];
-  const tools = toolSchemas();
+  const tools = toolSchemas(probePaths);
   let modelTotal = 0;
 
   const timeReason = `مهلت ${Math.round(limits.totalMs / 1000)} ثانیهٔ حلقهٔ بررسی تمام شد.`;
@@ -200,6 +211,7 @@ export async function investigateAgentic(args: InvestigateArgs): Promise<Agentic
     events,
     cpu,
     memory,
+    plan,
     probe,
     notes: partial.notes ?? [],
   });
@@ -224,7 +236,7 @@ export async function investigateAgentic(args: InvestigateArgs): Promise<Agentic
     const remaining = Math.max(1, deadline - toolStarted);
     const toolBudget = Math.min(limits.toolTimeoutMs ?? AGENTIC_LIMITS.toolTimeoutMs, remaining);
     const outcomes = await Promise.all(accepted.map(async (call) => {
-      const gate = gateAgenticTool(args.app, call.name, call.arguments);
+      const gate = gateAgenticTool(args.app, call.name, call.arguments, probePaths);
       if (!gate.ok) return { ...call, summary: gate.reason, evidenceId: "none" as const };
       try {
         const outcome = await withDeadline(
@@ -237,6 +249,7 @@ export async function investigateAgentic(args: InvestigateArgs): Promise<Agentic
         events.push(...(outcome.events ?? []));
         if (outcome.cpu) cpu = outcome.cpu;
         if (outcome.memory) memory = outcome.memory;
+        if (outcome.plan) plan = outcome.plan;
         if (outcome.probe) probe = outcome.probe;
         return { ...call, summary };
       } catch (err) {
@@ -276,7 +289,8 @@ export async function investigateAgentic(args: InvestigateArgs): Promise<Agentic
       { id: "seed-status", name: "liara_status", arguments: { reason: "وضعیت سرویس" }, reason: "وضعیت سرویس" },
       { id: "seed-events", name: "liara_events", arguments: { reason: "رویدادهای اخیر" }, reason: "رویدادهای اخیر" },
       { id: "seed-releases", name: "liara_releases", arguments: { reason: "انتشارهای اخیر" }, reason: "انتشارهای اخیر" },
-      { id: "seed-probe", name: "http_probe", arguments: { reason: "پروب صفحه", path: "/" }, reason: "پروب صفحه" },
+      { id: "seed-probe", name: "http_probe", arguments: { reason: "پروب صفحه", path: probePaths[0] ?? "/" }, reason: "پروب صفحه" },
+      { id: "seed-metrics", name: "liara_metrics", arguments: { reason: "حافظهٔ summary" }, reason: "حافظهٔ summary" },
     ], 0, false);
     if (seeded === "time") return finish({ ok: false, reason: timeReason });
   }
@@ -309,6 +323,7 @@ export async function investigateAgentic(args: InvestigateArgs): Promise<Agentic
         events,
         cpu,
         memory,
+        plan,
         probe,
         remedies: args.remedies,
         detect,
@@ -336,7 +351,8 @@ function systemPrompt(remedies: RemedyOption[]): string {
     "تو بررسی‌کنندهٔ رخداد هستی و فقط ابزارهای read-only همین فهرست را داری.",
     `ابزارهای مجاز: ${AGENTIC_READ_TOOLS.join("، ")}.`,
     "ابزار نوشتن، propose_action و execute_action وجود ندارند. اگر صدایشان کنی رد می‌شوند.",
-    "قدم اول status و events و releases و probe را با هم می‌خواند.",
+    "قدم اول status و events و releases و probe و metrics را با هم می‌خواند.",
+    "اگر summary-memory روند صعودی یا عبور از ۸۰٪ پلن را نشان داد، علت memory_leak است. kill/die همراه حافظهٔ بالا یعنی oom، نه crash_loop.",
     "ترتیب خواندن بعدی: اول http_probe، بعد liara_releases، بعد liara_events، و فقط اگر هنوز علت روشن نیست liara_logs و liara_metrics.",
     "اگر پروب، انتشار و رویداد علت را روشن نکرد، لاگ و متریک را بخوان و بعد متوقف شو.",
     "http_5xx فقط وقتی نمونهٔ وضعیت ۵xx یا استک خطا هست. وضعیت ۲۰۰ با p50 بالا یعنی slow_responses. رشد حافظه یا OOM یا leak یعنی memory_leak یا oom.",
@@ -350,7 +366,7 @@ function systemPrompt(remedies: RemedyOption[]): string {
   ].join("\n");
 }
 
-function toolSchemas(): Record<string, unknown>[] {
+function toolSchemas(probePaths: readonly string[]): Record<string, unknown>[] {
   const reason = { type: "string", description: "دلیل کوتاه فارسی برای این قدم" };
   const app = { type: "string", description: "نام اپ؛ فقط اپ همین رخداد" };
   return [
@@ -361,7 +377,7 @@ function toolSchemas(): Record<string, unknown>[] {
       sinceMinutes: { type: "integer", minimum: 1, maximum: 30 },
     }, ["reason"]),
     schema("liara_events", "رویدادهای اپ مثل OOM و ری‌استارت.", { app, reason }, ["reason"]),
-    schema("liara_metrics", "سری CPU و حافظه، بدون حدس واحد.", {
+    schema("liara_metrics", "سری CPU و memoryUsage از metrics/summary. واحد اگر در API نباشد حدس زده نمی‌شود.", {
       app,
       reason,
       sinceMinutes: { type: "integer", minimum: 1, maximum: 60 },
@@ -370,7 +386,7 @@ function toolSchemas(): Record<string, unknown>[] {
     schema("http_probe", "کد وضعیت و تأخیر. بدنهٔ پاسخ خوانده نمی‌شود.", {
       app,
       reason,
-      path: { type: "string", enum: [...AGENTIC_PROBE_PATHS] },
+      path: { type: "string", enum: [...new Set([...AGENTIC_PROBE_PATHS, ...probePaths])] },
       count: { type: "integer", minimum: 1, maximum: 3 },
     }, ["reason"]),
   ];
@@ -388,6 +404,7 @@ function chatBody(model: string, messages: AgenticLlmMessage[], tools: Record<st
 }
 
 async function defaultCallLlm(body: Record<string, unknown>, timeoutMs: number): Promise<unknown> {
+  await assertPublicHostname(config.llmBaseUrl);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -407,7 +424,22 @@ async function defaultCallLlm(body: Record<string, unknown>, timeoutMs: number):
   }
 }
 
-async function defaultExecuteTool(app: string, name: string, args: Record<string, unknown>): Promise<AgenticToolResult> {
+async function lookupPlanMemoryMB(app: string, timeoutMs: number): Promise<number | null> {
+  const { data } = await liaraGet<Record<string, unknown>>(EP.getProject(app), { timeoutMs });
+  const obj = (data?.["project"] ?? data ?? {}) as Record<string, unknown>;
+  const planID = typeof obj["planID"] === "string" ? obj["planID"] : "";
+  if (!planID) return null;
+  const catalog = await fetchPlanCatalog();
+  const ramGB = catalog.pairs.find((pair) => pair.planID === planID)?.ramGB;
+  return typeof ramGB === "number" && ramGB > 0 ? ramGB * 1024 : null;
+}
+
+async function defaultExecuteTool(
+  app: string,
+  name: string,
+  args: Record<string, unknown>,
+  probePaths: readonly string[] = [],
+): Promise<AgenticToolResult> {
   if (!isAgenticToolAllowed(name)) throw new Error("ابزار خارج از allowlist است.");
   const at = new Date().toISOString();
   const timeoutMs = clampNumber(args["timeoutMs"], AGENTIC_LIMITS.toolTimeoutMs, 250, 30_000);
@@ -452,8 +484,34 @@ async function defaultExecuteTool(app: string, name: string, args: Record<string
       liaraGet<unknown>(EP.metricsMemory(app), { timeoutMs, query: { since } }),
     ]);
     const cpu = cpuRes.status === "fulfilled" ? parseSeries(cpuRes.value.data, "cpu", "%") : null;
-    const memory = memoryRes.status === "fulfilled" ? parseSeries(memoryRes.value.data, "memory", "MB") : null;
-    return packed("ev_metrics", "metrics", { cpu: seriesBrief(cpu), memory: seriesBrief(memory) }, at, { cpu, memory });
+    let memory = memoryRes.status === "fulfilled" ? parseSeries(memoryRes.value.data, "memory", "MB") : null;
+    let summaryRaw: unknown = null;
+    let planMB: number | null = null;
+    try {
+      summaryRaw = (await liaraGet<unknown>(EP.metricsSummary(app), { timeoutMs })).data;
+    } catch {
+      summaryRaw = null;
+    }
+    try {
+      planMB = await lookupPlanMemoryMB(app, timeoutMs);
+    } catch {
+      planMB = null;
+    }
+    const assessed = rememberSummary(app, summaryRaw, planMB);
+    if (assessed.samples.length >= 2 || (!memory && assessed.samples.length)) {
+      memory = {
+        name: "memory",
+        unit: assessed.unit,
+        points: assessed.samples.map((value) => ({ ts: null, value })),
+      };
+    }
+    return packed(
+      "ev_metrics",
+      "metrics",
+      { cpu: seriesBrief(cpu), memory: seriesBrief(memory), summaryMemory: assessed.line },
+      at,
+      { cpu, memory, ...(planMB ? { plan: { ramMB: planMB } } : {}) },
+    );
   }
   if (name === "liara_releases") {
     const data = (await liaraGet<unknown>(EP.listReleases(app), { timeoutMs })).data;
@@ -467,7 +525,8 @@ async function defaultExecuteTool(app: string, name: string, args: Record<string
     });
     return packed("ev_releases", "events", { releases }, at);
   }
-  const path = typeof args["path"] === "string" ? args["path"] : "/health";
+  const path = typeof args["path"] === "string" ? args["path"] : (probePaths[0] ?? "/health");
+  if (!allowedProbePath(path, probePaths)) return packed("ev_probe", "probe", { path, error: "مسیر پروب مجاز نیست." }, at);
   const count = clampNumber(args["count"], 1, 1, 3);
   const budget = clampNumber(args["timeoutMs"], AGENTIC_LIMITS.toolTimeoutMs, 250, 30_000);
   const perSample = Math.min(10_000, Math.max(250, Math.floor(budget / count)));
@@ -498,6 +557,7 @@ function validateConclusion(content: string, ctx: {
   events: EventItem[];
   cpu: Series | null;
   memory: Series | null;
+  plan: PlanLimits | null;
   probe?: ProbeResult;
   remedies: RemedyOption[];
   detect: typeof detectCauses;
@@ -516,7 +576,7 @@ function validateConclusion(content: string, ctx: {
     memory: ctx.memory,
     probe: ctx.probe ?? null,
     env: null,
-    plan: null,
+    plan: ctx.plan,
     collectedAt: new Date().toISOString(),
   });
   const byDetector = new Map(detected.hypotheses.map((hypothesis) => [hypothesis.id, hypothesis]));
@@ -641,9 +701,9 @@ function sameApp(app: string, requested: unknown): boolean {
   }
 }
 
-function allowedProbePath(path: unknown): boolean {
+function allowedProbePath(path: unknown, extra: readonly string[] = []): boolean {
   const value = typeof path === "string" && path.trim() ? path.trim() : "/health";
-  return (AGENTIC_PROBE_PATHS as readonly string[]).includes(value);
+  return (AGENTIC_PROBE_PATHS as readonly string[]).includes(value) || extra.includes(value);
 }
 
 function omitSecretKeys(value: unknown): unknown {

@@ -7,10 +7,11 @@
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { config, isAllowedApp } from "../config.js";
+import { config, isAllowedApp, readOwnedApps, registerOwnedApp } from "../config.js";
 import { fa, maskValue } from "../i18n/fa.js";
 import {
   consumeApproval,
+  createPendingApproval,
   decideApproval,
   effectiveRisk,
   getApproval,
@@ -29,7 +30,9 @@ import { audited, bullets, faTime, result } from "./common.js";
 import { parsePlans } from "./read.js";
 import { assertPreflight } from '../liara/preflight-gate.js';
 import { redact } from '../redact.js';
-import { quoteCreate, assertQuoteUnchanged, pairLabel } from '../liara/plans.js';
+import { quoteCreate, assertQuoteUnchanged, quoteDisk, assertDiskQuoteUnchanged, pairLabel, type DiskQuote } from '../liara/plans.js';
+import { describeDiskDeploy, detectStack } from "../deploy/detect.js";
+import { resolveProjectPath } from "../deploy/project-path.js";
 import {
   ENV_CHANGE_WINDOW_SEC,
   diffEnv,
@@ -84,13 +87,14 @@ const ACTIONS = new Map<string, ActionSpec>();
 const appName = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/);
 const variable = z.object({ key: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), value: z.string() });
 const actionSchemas: Record<string, z.ZodType> = {
-  liara_create_app: z.object({ name: appName, planID: z.string().min(1), platform: z.enum(['node','docker','python','static']), bundlePlanID: z.string().min(1), network: z.string().optional() }),
+  liara_create_app: z.object({ name: appName, planID: z.string().min(1), platform: z.enum(['node','docker','python','static']), bundlePlanID: z.string().min(1), network: z.string().optional(), projectPath: z.string().optional() }),
   liara_create_network: z.object({ app: appName, networkName: appName }),
+  liara_create_disk: z.object({ app: appName, name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/), size: z.string().regex(/^\d+(\.\d+)?$/) }),
   liara_deploy: z.object({ app: appName, path: z.string().min(1) }),
   liara_restart: z.object({ app: appName }),
   liara_scale: z.object({ app: appName, on: z.boolean() }),
   liara_resize: z.object({ app: appName, planID: z.string().min(1) }),
-  liara_set_env: z.object({ app: appName, variables: z.array(variable), unset: z.array(z.string()).optional() }),
+  liara_set_env: z.object({ app: appName, variables: z.array(variable), unset: z.array(z.string()).optional(), awaitingValues: z.boolean().optional() }),
   rollback_last_env_change: z.object({
     app: appName,
     incidentAt: z.string().min(1).optional(),
@@ -102,13 +106,31 @@ const actionSchemas: Record<string, z.ZodType> = {
   liara_enable_ssl: z.object({ domain: z.string().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/i) }),
 };
 
-async function checkScope(kind: string, params: Record<string, unknown>): Promise<string | null> {
-  if (kind === 'liara_create_app') return requireAllowedApp(String(params.name ?? ''));
-  if (kind !== 'liara_enable_ssl') return requireAllowedApp(String(params.app ?? params.name ?? ''));
-  for (const app of config.allowedApps) {
-    const { data } = await liaraGet<any>(EP.listDomains, { query: { project: app } });
-    const rows = Array.isArray(data) ? data : data?.domains ?? [];
-    if (rows.some((r: any) => r.name === params.domain)) return null;
+/** ساخت اپ هنوز owned نیست؛ تأیید high خودش دروازه است. بقیه باید allowlist یا owned باشند. */
+export function appWriteAllowed(kind: string, app: string): boolean {
+  if (kind === "liara_create_app" || kind === "liara_enable_ssl") return true;
+  return isAllowedApp(app);
+}
+
+async function listProjectDomains(app: string): Promise<{ name?: string }[]> {
+  const { data } = await liaraGet<any>(EP.listDomains, { query: { project: app } });
+  const rows = Array.isArray(data) ? data : data?.domains ?? [];
+  return rows as { name?: string }[];
+}
+
+export async function checkScope(
+  kind: string,
+  params: Record<string, unknown>,
+  listDomains: (app: string) => Promise<{ name?: string }[]> = listProjectDomains,
+): Promise<string | null> {
+  if (kind !== "liara_enable_ssl" && !appWriteAllowed(kind, String(params.app ?? params.name ?? ""))) {
+    return requireAllowedApp(String(params.app ?? params.name ?? ""));
+  }
+  if (kind !== "liara_enable_ssl") return null;
+  const apps = [...new Set([...config.allowedApps, ...readOwnedApps()])];
+  for (const app of apps) {
+    const rows = await listDomains(app);
+    if (rows.some((row) => row.name === params.domain)) return null;
   }
   return '❌ دامنه به هیچ اپ مجازی متصل نیست.';
 }
@@ -233,6 +255,38 @@ function requireAllowedApp(app: string | undefined): string | null {
     return fa.appNotAllowed(app, config.allowedApps);
   }
   return null;
+}
+
+/** بعد از ساخت اپ، فقط نام کلیدها را روی کارت set_env می‌گذارد. مقدار چاپ نمی‌شود. */
+export function envCardAfterCreate(app: string, projectPath: unknown): string {
+  if (typeof projectPath !== "string" || !projectPath.trim()) return "";
+  let keys: string[] = [];
+  try {
+    keys = detectStack(resolveProjectPath(projectPath), app).requiredEnv;
+  } catch {
+    return "";
+  }
+  if (!keys.length) return "";
+  const record = createPendingApproval({
+    tool: "liara_set_env",
+    app,
+    params: {
+      app,
+      variables: keys.map((key) => ({ key, value: "" })),
+      unset: [],
+      awaitingValues: true,
+    },
+    summaryFa: `تنظیم env اپ «${app}»؛ کلیدها: ${keys.join("، ")}. مقادیر در این کارت نیستند.`,
+    risk: "medium",
+    impact: "نوشتن متغیرهای محیطی فقط بعد از اینکه مقدارها را جدا بدهید. این کارت با مقدار خالی اجرا نمی‌شود.",
+    choices: SIMPLE_CHOICES,
+  });
+  return [
+    "کلیدهای env لازم (مقدار چاپ نمی‌شود):",
+    ...keys.map((key) => `• ${key}`),
+    pendingMessage(record),
+    "مقدارها را در liara_set_env بدهید؛ این کارت تا آمدن مقدار اجرا نمی‌شود.",
+  ].join("\n");
 }
 
 /**
@@ -364,9 +418,34 @@ registerAction({
     const body: Record<string, unknown> = { name, planID, platform, ...(p.bundlePlanID ? { bundlePlanID: p.bundlePlanID } : {}), ...(p.network ? {network:p.network} : {}) };
     const { data } = await liaraPost<Record<string, unknown>>(EP.createProject, body);
     const id = (data ?? {})["projectID"] ?? (data ?? {})["id"] ?? name;
+    registerOwnedApp(name);
+    const envCard = envCardAfterCreate(name, p["projectPath"]);
     return {
-      text: [`✅ اپ «${name}» ساخته شد.`, `🆔 شناسه: ${String(id)}`].join("\n"),
-      structured: { ok: true, name, planID, platform, id: String(id), raw: data },
+      text: [`✅ اپ «${name}» ساخته شد.`, `🆔 شناسه: ${String(id)}`, envCard].filter(Boolean).join("\n"),
+      structured: { ok: true, name, planID, platform, id: String(id), owned: true, raw: data },
+    };
+  },
+});
+
+registerAction({
+  kind: "liara_create_disk",
+  risk: "high",
+  impact: "ساخت دیسک دائمی روی اپ. اگر قیمت در API نباشد عددی حدس زده نمی‌شود.",
+  appScoped: true,
+  describe: (p) => {
+    const quote = p["quote"] as DiskQuote | undefined;
+    return `ساخت دیسک «${String(p["name"] ?? "")}» به اندازهٔ ${String(p["size"] ?? "")} روی «${String(p["app"] ?? "")}». ${quote?.note ?? ""}`.trim();
+  },
+  choices: () => SIMPLE_CHOICES,
+  run: async (p) => {
+    assertDiskQuoteUnchanged(p["quote"], await quoteDisk(p));
+    const app = String(p["app"] ?? "");
+    const name = String(p["name"] ?? "");
+    const size = String(p["size"] ?? "");
+    const { data } = await liaraPost<Record<string, unknown>>(EP.createDisk(app), { name, size });
+    return {
+      text: `درخواست ساخت دیسک «${name}» به اندازهٔ ${size} روی «${app}» پذیرفته شد.`,
+      structured: { ok: true, app, name, size, raw: data },
     };
   },
 });
@@ -378,7 +457,17 @@ registerAction({
   risk: "medium",
   impact: "بیلد و انتشار نسخهٔ جدید روی سرویس (سرویس برای چند ثانیه بازنشانی می‌شود)",
   appScoped: true,
-  describe: (p) => `انتشار سورس پوشهٔ «${String(p["path"] ?? ".")}» روی اپ «${String(p["app"] ?? "")}».`,
+  describe: (p) => {
+    const folder = String(p["path"] ?? "");
+    let disks = "";
+    try {
+      const detection = detectStack(folder);
+      disks = detection.disks?.length ? `\n${describeDiskDeploy(detection.disks)}` : "";
+    } catch {
+      disks = "";
+    }
+    return `انتشار سورس پوشهٔ «${folder}» روی اپ «${String(p["app"] ?? "")}».${disks}`;
+  },
   choices: () => SIMPLE_CHOICES,
   run: async (p) => {
     const app = String(p["app"] ?? "");
@@ -406,6 +495,12 @@ registerAction({
   choices: () => SIMPLE_CHOICES,
   run: async (p) => {
     const app = String(p["app"] ?? "");
+    if (p["awaitingValues"] === true) {
+      return {
+        text: "مقادیر env از کاربر نیامده؛ هیچ درخواستی به لیارا فرستاده نشد.",
+        structured: { ok: false, code: "ENV_VALUES_REQUIRED", app },
+      };
+    }
     const vars = (p["variables"] as { key: string; value: string }[] | undefined) ?? [];
     const unset = (p["unset"] as string[] | undefined) ?? [];
 
@@ -854,6 +949,7 @@ export async function runGuardedAction(
   }
 
   if (kind === 'liara_create_app') params = { ...params, quote: await quoteCreate(params) };
+  if (kind === 'liara_create_disk') params = { ...params, quote: await quoteDisk(params) };
   const summaryFa = spec.describe(params);
   const decision = decideApproval({ tool: kind, params, declaredRisk: spec.risk });
 
@@ -938,20 +1034,41 @@ export function registerWriteTools(server: McpServer): void {
         bundlePlanID: z.string().min(1).describe('شناسهٔ بستهٔ فعال زیر کلید دقیق planID در plans.projectBundlePlans'),
         network: z.string().optional().describe('شناسهٔ شبکهٔ داخلی لیارا'),
         platform: z.enum(["node", "docker", "python", "static"]).default("node").describe("پلتفرم اجرا"),
+        projectPath: z.string().optional().describe("مسیر مطلق پروژه برای تشخیص کلیدهای env بعد از ساخت"),
       },
       annotations: WRITE_ANNOTATIONS,
     },
-    async ({ name, planID, platform, bundlePlanID, network }) =>
+    async ({ name, planID, platform, bundlePlanID, network, projectPath }) =>
       audited(
         "liara_create_app",
         name,
         { name, planID, platform },
         async () => {
-          const out = await runGuardedAction("liara_create_app", { name, planID, platform, bundlePlanID, network });
+          const out = await runGuardedAction("liara_create_app", { name, planID, platform, bundlePlanID, network, projectPath });
           return out.res;
         },
         "auto",
       ),
+  );
+
+  server.registerTool(
+    "liara_create_disk",
+    {
+      title: "ساخت دیسک روی اپ",
+      description:
+        "ساخت دیسک با POST /v1/projects/{name}/disks (OpenAPI createDisk). ریسک high و quote قبل از تأیید. اگر قیمت در GET /v1/me نباشد، عددی حدس زده نمی‌شود. mount در این ابزار انجام نمی‌شود.",
+      inputSchema: {
+        app: z.string().min(1).describe("نام اپ"),
+        name: z.string().min(1).describe("نام دیسک"),
+        size: z.string().regex(/^\d+(\.\d+)?$/).describe("اندازه به گیگابایت، رشته، مثل 2.5"),
+      },
+      annotations: WRITE_ANNOTATIONS,
+    },
+    async ({ app, name, size }) =>
+      audited("liara_create_disk", app, { app, name, size }, async () => {
+        const out = await runGuardedAction("liara_create_disk", { app, name, size });
+        return out.res;
+      }),
   );
 
   /* ── liara_deploy ────────────────────────────────────────────────── */
@@ -963,15 +1080,23 @@ export function registerWriteTools(server: McpServer): void {
         "بسته‌بندی پوشهٔ پروژه، آپلود روی لیارا و انتشار نسخهٔ جدید (نیازمند تأیید).",
       inputSchema: {
         app: z.string().min(1).describe("نام اپ در لیارا"),
-        path: z.string().default(".").describe("مسیر پوشهٔ پروژه روی دیسک"),
+        projectPath: z.string().optional().describe("مسیر مطلق پوشهٔ پروژه"),
+        path: z.string().optional().describe("نام قدیمی projectPath؛ باید مطلق باشد"),
       },
       annotations: WRITE_ANNOTATIONS,
     },
-    async ({ app, path: src }) =>
-      audited("liara_deploy", app, { app, path: src }, async () => {
-        const out = await runGuardedAction("liara_deploy", { app, path: src });
+    async ({ app, path: src, projectPath }) => {
+      let folder = "";
+      try {
+        folder = resolveProjectPath(projectPath || src || "");
+      } catch (err) {
+        return result((err as Error).message, { ok: false, code: "PROJECT_PATH_REQUIRED" });
+      }
+      return audited("liara_deploy", app, { app, path: folder }, async () => {
+        const out = await runGuardedAction("liara_deploy", { app, path: folder });
         return out.res;
-      }),
+      });
+    },
   );
 
   /* ── liara_set_env ───────────────────────────────────────────────── */

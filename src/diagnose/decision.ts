@@ -8,6 +8,7 @@ import { config } from "../config.js";
 import type { Hypothesis, RemedyKind } from "../types.js";
 import { detectCauses, DETECTOR_IDS, INJECTION_CONFIDENCE_CAP } from "./detectors.js";
 import { UNSUPPORTED_CONFIDENCE_CAP, contentText, eventLabel, summarizeForModel } from "./agentic.js";
+import { assertPublicHostname } from "./resolver.js";
 import type { RemedyOption } from "./llm.js";
 
 const DETECTOR_CRITERIA: Record<string, string> = {
@@ -54,6 +55,7 @@ export interface DecideArgs {
   cpu?: import("../types.js").Series | null;
   memory?: import("../types.js").Series | null;
   probe?: import("../types.js").ProbeResult | null;
+  plan?: import("../types.js").PlanLimits | null;
   detect?: typeof detectCauses;
   callJev?: (body: Record<string, unknown>, timeoutMs: number) => Promise<unknown>;
   callModel?: (model: string, messages: { role: string; content: string }[], timeoutMs: number) => Promise<unknown>;
@@ -73,14 +75,15 @@ export async function decideIncident(args: DecideArgs): Promise<DecisionOutcome>
 
   const jevFailure = await tryJev(args, decisionModel, timeoutMs);
   if (jevFailure.ok) return jevFailure;
-  const loopId = args.loop?.hypotheses[0]?.id;
-  const loopBlocked = loopId === "crash_loop" && memorySignal(args) && !hasNonOomRestart(args);
-  if (args.loop?.ok && args.loop.hypotheses.length && !loopBlocked) {
+  const loopHypotheses = crashLoopBlocked(args)
+    ? (args.loop?.hypotheses ?? []).filter((item) => item.id !== "crash_loop")
+    : (args.loop?.hypotheses ?? []);
+  if (args.loop?.ok && loopHypotheses.length) {
     return {
       ok: true,
       layer: "deepseek",
       model: primary,
-      hypotheses: args.loop.hypotheses,
+      hypotheses: loopHypotheses,
       selectedRemedy: args.loop.selectedRemedy,
       remedySource: args.loop.remedySource,
       reason: jevFailure.reason,
@@ -158,8 +161,8 @@ function acceptChoice(
   if (remedyId && !allowed.has(remedyId as RemedyKind)) {
     return empty(layer, `راهکار ${remedyId} خارج از allowlist است.`);
   }
-  if (hypothesisId === "crash_loop" && memorySignal(args) && !hasNonOomRestart(args)) {
-    return empty(layer, "با نشانهٔ OOM یا leak، crash_loop فقط وقتی restart بدون OOM هم باشد مجاز است.");
+  if (hypothesisId === "crash_loop" && crashLoopBlocked(args)) {
+    return empty(layer, "kill/die همراه حافظهٔ بالا OOM محتمل است، نه crash_loop.");
   }
   const detected = (args.detect ?? detectCauses)({
     app: "decision",
@@ -169,7 +172,7 @@ function acceptChoice(
     memory: args.memory ?? null,
     probe: args.probe ?? null,
     env: null,
-    plan: null,
+    plan: args.plan ?? null,
     collectedAt: new Date().toISOString(),
   });
   const detector = detected.hypotheses.find((item) => item.id === hypothesisId);
@@ -205,7 +208,30 @@ function memorySignal(args: DecideArgs): boolean {
     ...(args.logs ?? []).map((line) => line.message),
     ...(args.events ?? []).map((event) => `${event.type} ${event.message}`),
   ].join("\n");
-  return /heap|\[BUG\]\s*leak|heap out of memory|OOMKilled/i.test(blob);
+  if (/heap|\[BUG\]\s*leak|heap out of memory|OOMKilled|summary-memory[^\n]*\b(rising|over80)=true/i.test(blob)) return true;
+  return seriesMemoryPressure(args);
+}
+
+function seriesMemoryPressure(args: DecideArgs): boolean {
+  const points = args.memory?.points ?? [];
+  const last = points.at(-1)?.value;
+  const previous = points.at(-2)?.value;
+  if (last !== undefined && previous !== undefined && (last > previous || last > points[0]!.value)) return true;
+  const plan = args.plan?.ramMB;
+  if (!plan || plan <= 0 || last === undefined) return false;
+  const mb = args.memory?.unit === "MB" ? last : args.memory?.unit === "bytes" ? last / (1024 * 1024) : null;
+  return mb !== null && mb / plan >= 0.8;
+}
+
+function hasKillOrDie(args: DecideArgs): boolean {
+  return (args.events ?? []).some((event) => /\b(kill|die|killed)\b/i.test(`${event.type} ${event.message}`));
+}
+
+/** حافظهٔ بالا با kill/die همیشه crash_loop را می‌بندد، حتی اگر restart هم ثبت شده باشد. */
+function crashLoopBlocked(args: DecideArgs): boolean {
+  if (!memorySignal(args)) return false;
+  if (hasKillOrDie(args)) return true;
+  return !hasNonOomRestart(args);
 }
 
 function hasNonOomRestart(args: DecideArgs): boolean {
@@ -317,6 +343,7 @@ async function defaultCallModel(model: string, messages: { role: string; content
 }
 
 async function postJson(pathname: string, body: Record<string, unknown>, timeoutMs: number): Promise<unknown> {
+  await assertPublicHostname(config.llmBaseUrl);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {

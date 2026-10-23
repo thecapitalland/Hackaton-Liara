@@ -2,7 +2,26 @@ import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { config } from '../src/config.js';
+import { assertPublicHostname } from '../src/diagnose/resolver.js';
 import { ensureBuild } from './ensure-build.js';
+
+async function assertGapGpt(): Promise<void> {
+  await assertPublicHostname(config.llmBaseUrl);
+  const url = new URL(config.llmBaseUrl);
+  const response = await fetch(`${config.llmBaseUrl.replace(/\/$/, "")}/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${config.llmApiKey}` },
+    body: JSON.stringify({
+      model: config.llmModel,
+      messages: [{ role: "user", content: "ping" }],
+      max_tokens: 1,
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  await response.arrayBuffer();
+  console.log(`PASS: GapGPT host=${url.hostname} resolver=system public=true status=${response.status}`);
+  if (response.status !== 200) throw new Error(`GapGPT HTTP ${response.status}`);
+}
 
 ensureBuild();
 
@@ -33,6 +52,7 @@ try {
     assert.equal((probe.structuredContent as any)?.probe?.ok,true);
     console.log('PASS: live list + HTTP probe (read-only)');
   } else console.log('SKIP: live smoke — حالت offline یا نبود توکن.');
+  if (!offline) await assertGapGpt();
 } finally {
   await client.close();
 }

@@ -23,7 +23,7 @@ export function registerWatchTools(server: McpServer): void {
     {
       title: "پایش مداوم و رفع سیاست‌محور",
       description:
-        "هر چرخه مسیرهای /، /api/challenges و /api/status را پروب می‌کند و خلاصهٔ متریک و رویدادها را می‌خواند. " +
+        "هر چرخه مسیرهای probePaths یا probePaths داخل liara.json را پروب می‌کند. اگر هیچ‌کدام نباشد مسیرهای دمو / و /api/challenges و /api/status استفاده می‌شوند. " +
         "۵xx، timeout و خطای اتصال خطا هستند. اگر هیچ نمونهٔ موفقی نماند رخداد outage ساخته می‌شود. " +
         "یک خطای تکی و گذرا فقط هشدار است؛ remediation بعد از دو چرخهٔ پشت‌سرهم یا حداقل دو پروب ناموفق است. " +
         "p50 بالای ۱۵۰۰ms یا رویداد جدید OOM/ری‌استارت هم diagnose را بدون env اجرا می‌کند. " +
@@ -48,10 +48,12 @@ export function registerWatchTools(server: McpServer): void {
           .boolean()
           .optional()
           .describe("اجازهٔ اقدام درمانی سیاست‌محور پس از تشخیص (strict = تأیید، balanced = low خودکار)"),
+        probePaths: z.array(z.string()).optional().describe("مسیرهای پروب این اپ"),
+        projectPath: z.string().optional().describe("مسیر مطلق پروژه برای خواندن probePaths از liara.json"),
       },
       annotations: WATCH_ANNOTATIONS,
     },
-    async ({ app, cycles, intervalSec, remediate }) => {
+    async ({ app, cycles, intervalSec, remediate, probePaths, projectPath }) => {
       if (!isAllowedApp(app)) {
         return result(fa.appNotAllowed(app, config.allowedApps), {
           ok: false,
@@ -67,7 +69,7 @@ export function registerWatchTools(server: McpServer): void {
       const reports: WatchCheckResult[] = [];
       try {
         for (let i = 0; i < cycles; i++) {
-          reports.push(await runWatchCheck({ app, remediate: allowRemediation }));
+          reports.push(await runWatchCheck({ app, remediate: allowRemediation, probePaths, projectPath }));
           if (i < cycles - 1) {
             await sleep((intervalSec ?? config.watchIntervalSec) * 1000);
           }

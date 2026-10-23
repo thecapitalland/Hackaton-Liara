@@ -305,9 +305,11 @@ const memoryLeak: Detector = {
       notes.push("لاگ صراحتاً رشد حافظه را گزارش کرده است.");
     }
 
-    if (memory && memory.points.length >= 5) {
+    let metricObserved = false;
+    if (memory && memory.points.length >= 2) {
       const s = stats(memory.points);
-      const rising = isRising(memory.points);
+      const previous = memory.points[memory.points.length - 2]!.value;
+      const rising = isRising(memory.points) || s.last > memory.points[0]!.value || s.last > previous;
       const sl = slope(memory.points);
       evidenceIds.push(
         ctx.addEvidence(
@@ -316,12 +318,13 @@ const memoryLeak: Detector = {
         ),
       );
       if (rising) {
-        confidence += 0.3;
-        notes.push("سری حافظه در بازهٔ اخیر یکنواخت صعودی است.");
+        confidence += 0.35;
+        metricObserved = true;
+        notes.push("نمونه‌های پشت‌سرهم حافظه روند صعودی دارند.");
       }
       const planRam = plan?.ramMB;
-      if (planRam && planRam > 0 && memory.unit === 'MB') {
-        const lastMb = s.last;
+      const lastMb = memoryMb(memory.unit, s.last);
+      if (planRam && planRam > 0 && lastMb !== null) {
         const pctOfPlan = (lastMb / planRam) * 100;
         evidenceIds.push(
           ctx.addEvidence(
@@ -329,15 +332,16 @@ const memoryLeak: Detector = {
             `مصرف فعلی حافظه حدود ${pct(pctOfPlan)} از سقف پلن (${planRam} MB) است.`,
           ),
         );
-        if (pctOfPlan > 80) {
+        if (pctOfPlan >= 80) {
           confidence += 0.3;
+          metricObserved = true;
           notes.push(`مصرف حافظه از ۸۰٪ سقف پلن عبور کرده (${pct(pctOfPlan)}).`);
         }
       } else {
         notes.push("سقف حافظهٔ پلن از API به‌طور قطعی در دسترس نبود؛ سنجش نسبی انجام شد.");
       }
     } else {
-      ctx.addEvidence("metrics", "سری حافظه در دسترس نبود یا کمتر از ۵ نمونه داشت.", false);
+      ctx.addEvidence("metrics", "سری حافظه در دسترس نبود یا کمتر از ۲ نمونه داشت.", false);
     }
 
     if (confidence < 0.3) return null;
@@ -347,7 +351,7 @@ const memoryLeak: Detector = {
       cause: "نشت حافظه (رشد پیوستهٔ heap در طول زمان)",
       confidence: Math.min(0.95, confidence),
       evidenceIds,
-      kind: leakLogs.length ? "observed" : "inferred",
+      kind: leakLogs.length || metricObserved ? "observed" : "inferred",
       remedies: ["restart", "resize", "code_fix"],
       remedyText: [
         "ری‌استارت سرویس: سریع و موقت؛ حافظه آزاد می‌شود ولی علت باقی می‌ماند.",
@@ -387,6 +391,16 @@ const oom: Detector = {
         ),
       );
       confidence += 0.3;
+    }
+
+    if (memoryPressure(ctx.input)) {
+      const killed = events.filter(isKillOrDie);
+      if (killed.length) {
+        evidenceIds.push(
+          ctx.addEvidence("events", `${killed.length} رویداد kill/die همراه حافظهٔ بالا؛ OOM محتمل است.`),
+        );
+        confidence += 0.55;
+      }
     }
 
     if (confidence < 0.3) return null;
@@ -581,11 +595,33 @@ const missingEnv: Detector = {
   },
 };
 
+function memoryMb(unit: string, value: number): number | null {
+  if (unit === "MB") return value;
+  if (unit === "bytes") return value / (1024 * 1024);
+  return null;
+}
+
+function memoryPressure(input: DetectionInput): boolean {
+  const points = input.memory?.points ?? [];
+  const last = points.at(-1)?.value;
+  const previous = points.at(-2)?.value;
+  if (last !== undefined && previous !== undefined && (last > previous || last > points[0]!.value)) return true;
+  const plan = input.plan?.ramMB;
+  if (!plan || plan <= 0 || last === undefined || !input.memory) return false;
+  const mb = memoryMb(input.memory.unit, last);
+  return mb !== null && mb / plan >= 0.8;
+}
+
+function isKillOrDie(event: EventItem): boolean {
+  return /\b(kill|die|killed)\b/i.test(`${event.type} ${event.message}`);
+}
+
 /* ── detector: حلقهٔ کرش ───────────────────────────────────────────── */
 const crashLoop: Detector = {
   id: "crash_loop",
   run(ctx) {
     const { events } = ctx.input;
+    if (memoryPressure(ctx.input) && events.some(isKillOrDie)) return null;
     const restarts = events.filter((e) => /restart|crash|kill|reboot|exit/i.test(`${e.type} ${e.message}`));
     if (restarts.length < 2) return null;
     const nowMs = Date.parse(ctx.now);

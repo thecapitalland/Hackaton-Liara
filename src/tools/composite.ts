@@ -37,7 +37,8 @@ import {
   hasEnvBaseline,
   type EnvChangeCandidate,
 } from "../env-history.js";
-import { detectStack, type StackDetection } from "../deploy/detect.js";
+import { describeDiskDeploy, detectStack, readProbePaths, type StackDetection } from "../deploy/detect.js";
+import { resolveProjectPath, sanitizeProbePaths } from "../deploy/project-path.js";
 import { humanSize, packageSource } from "../deploy/package.js";
 import { httpProbe, probeSummary, sleep } from "../probe.js";
 import { askChoice } from "../approval.js";
@@ -161,7 +162,7 @@ export function buildReleaseBody(
       cache: true,
       args: {},
       location,
-      ...(detection.platform === "docker" ? { dockerfile: "Dockerfile" } : {}),
+      ...(detection.platform === "docker" ? { dockerfile: detection.dockerfile || "Dockerfile" } : {}),
     },
   };
 }
@@ -172,18 +173,21 @@ export function buildReleaseBody(
  */
 export async function deploySourceToApp(app: string, srcPath: string): Promise<DeployOutcome> {
   const lines: string[] = [];
+  const folder = resolveProjectPath(srcPath);
 
   lines.push(`${fa.deployDetect}`);
-  const detection = detectStack(srcPath, app);
+  const detection = detectStack(folder, app);
   lines.push(
     `• پلتفرم: ${detection.platform} | پورت: ${detection.port ?? 3000}${detection.startCommand ? ` | اجرا: ${detection.startCommand}` : ""}`,
   );
   if (detection.requiredEnv.length) {
     lines.push(`• متغیرهای محیطی موردنیاز: ${detection.requiredEnv.join("، ")}`);
   }
+  const diskNote = describeDiskDeploy(detection.disks ?? []);
+  if (diskNote) lines.push(diskNote);
 
   lines.push(fa.deployPackage);
-  const packed = await packageSource(srcPath);
+  const packed = await packageSource(folder);
   lines.push(
     `• ${packed.fileCount} فایل — ${humanSize(packed.bytes)} (${packed.excluded.length} مورد مستثنا شد)`,
   );
@@ -269,6 +273,7 @@ async function ensureApp(
   desiredPlan?: string,
   bundlePlanID?: string,
   network?: string,
+  projectPath?: string,
 ): Promise<{ app: string; created: boolean; planID?: string; note?: string }> {
   try {
     await liaraGet(EP.getProject(app));
@@ -304,6 +309,7 @@ async function ensureApp(
     platform,
     bundlePlanID: chosen.bundlePlanID,
     network,
+    ...(projectPath ? { projectPath } : {}),
   });
   const ok = (out.res.structuredContent as { ok?: boolean } | undefined)?.ok === true;
   return { app, created: ok, planID: chosen.planID, note: ok ? undefined : String(out.res.content[0]?.type === 'text' ? out.res.content[0].text : '') };
@@ -422,6 +428,10 @@ export interface DiagnosisOptions {
   includeReleaseEnvEvents?: boolean;
   /** برای تست؛ مسیر ذخیرهٔ baseline. */
   stateDir?: string;
+  /** مسیرهای پروب علاوه بر پیش‌فرض. */
+  probePaths?: string[];
+  /** مسیر مطلق پروژه برای خواندن probePaths از liara.json. */
+  projectPath?: string;
   /** اگر false، LLM حتی با پیکربندی کامل فراخوانی نمی‌شود (تست/آفلاین). */
   llm?: boolean;
   /** agentic حلقهٔ ابزار می‌زند؛ fixed همان جمع‌آوری و رتبه‌بندی فعلی است. */
@@ -1076,6 +1086,18 @@ function decisionSummary(attempt: AgenticInvestigation, fallback: string): strin
   return summarizeForModel(`${header}\n${steps || fallback}`);
 }
 
+function withAttemptEvidence(options: DiagnosisOptions, attempt: AgenticInvestigation): DiagnosisOptions {
+  return {
+    ...options,
+    ...(options.logs === undefined && attempt.logs.length ? { logs: attempt.logs } : {}),
+    ...(options.events === undefined && attempt.events.length ? { events: attempt.events } : {}),
+    ...(options.cpu === undefined && attempt.cpu ? { cpu: attempt.cpu } : {}),
+    ...(options.memory === undefined && attempt.memory ? { memory: attempt.memory } : {}),
+    ...(options.plan === undefined && attempt.plan ? { plan: attempt.plan } : {}),
+    ...(options.probe === undefined && attempt.probe ? { probe: attempt.probe } : {}),
+  };
+}
+
 export async function runDiagnosis(
   app: string,
   symptom?: string,
@@ -1091,10 +1113,12 @@ export async function runDiagnosis(
       bundle.notes.unshift(trace.fallbackReason!);
     } else {
       const remedy = await agenticRemedyContext(app, options);
+      const fromFile = options.projectPath ? readProbePaths(resolveProjectPath(options.projectPath)) : [];
       const attempt = await investigateAgentic({
         app,
         symptom,
         remedies: remedy.remedies,
+        probePaths: [...sanitizeProbePaths(options.probePaths), ...fromFile],
         model: options.agentic?.model ?? config.llmModel,
         now: options.agentic?.now,
         limits: options.agentic?.limits,
@@ -1118,6 +1142,7 @@ export async function runDiagnosis(
             events: attempt.events,
             cpu: attempt.cpu,
             memory: attempt.memory,
+            plan: attempt.plan ?? options.plan ?? null,
             probe: attempt.probe ?? null,
             detect: options.agentic?.detect,
             callJev: options.agentic?.callJev,
@@ -1134,6 +1159,10 @@ export async function runDiagnosis(
         attempt.selectedRemedy = decision.selectedRemedy;
         attempt.remedySource = decision.remedySource;
         attempt.notes.push(`لایهٔ تصمیم: ${decision.layer}${decision.model ? ` (${decision.model})` : ""}`);
+      } else if (decision && attempt.hypotheses.some((item) => item.id === "crash_loop")) {
+        attempt.ok = false;
+        attempt.hypotheses = attempt.hypotheses.filter((item) => item.id !== "crash_loop");
+        attempt.reason = decision.reason ?? "crash_loop با شاهد حافظه پذیرفته نشد.";
       }
       trace = {
         mode: attempt.ok ? "agentic" : "fixed",
@@ -1152,7 +1181,7 @@ export async function runDiagnosis(
       if (attempt.ok) {
         bundle = bundleFromAgentic(app, attempt, remedy, options);
       } else {
-        bundle = await gatherDiagnosis(app, symptom, options);
+        bundle = await gatherDiagnosis(app, symptom, withAttemptEvidence(options, attempt));
         bundle.notes.unshift(trace.fallbackReason!);
       }
     }
@@ -1247,7 +1276,8 @@ export function registerCompositeTools(server: McpServer): void {
       description:
         "تشخیص استک پروژه → (در صورت نبود اپ) ساخت اپ با انتخاب پلن → بسته‌بندی و آپلود سورس → انتشار → پیگیری بیلد → بررسی سلامت آدرس زنده.",
       inputSchema: {
-        path: z.string().default(".").describe("مسیر پوشهٔ پروژه"),
+        projectPath: z.string().optional().describe("مسیر مطلق پوشهٔ پروژه"),
+        path: z.string().optional().describe("نام قدیمی projectPath؛ باید مطلق باشد"),
         app: z.string().default("agate-liara").describe("نام اپ در لیارا"),
         planID: z.string().optional().describe('پلن صریحاً انتخاب‌شده توسط کاربر؛ در نبود elicitation'),
         bundlePlanID: z.string().optional().describe('بستهٔ امکانات انتخاب‌شده'),
@@ -1255,24 +1285,31 @@ export function registerCompositeTools(server: McpServer): void {
       },
       annotations: COMPOSITE_ANNOTATIONS,
     },
-    async ({ path: src, app, planID, bundlePlanID, network }) => {
-      const started = Date.now();
+    async ({ path: src, projectPath, app, planID, bundlePlanID, network }) => {
       try {
-        if (!isAllowedApp(app)) {
+        const folder = resolveProjectPath(projectPath || src || "");
+        let exists = false;
+        try {
+          await liaraGet(EP.getProject(app));
+          exists = true;
+        } catch (error) {
+          if (!(error instanceof LiaraError) || error.status !== 404) throw error;
+        }
+        if (exists && !isAllowedApp(app)) {
           return result(fa.appNotAllowed(app, config.allowedApps), {
             ok: false,
             code: "APP_NOT_ALLOWLISTED",
           });
         }
-        const detection = detectStack(src, app);
-        const ensured = await ensureApp(app, detection.platform, planID, bundlePlanID, network);
+        const detection = detectStack(folder, app);
+        const ensured = await ensureApp(app, detection.platform, planID, bundlePlanID, network, folder);
         if (ensured.note) {
           return result(ensured.note, { ok: false, code: ensured.note.includes('نیاز به تأیید') ? 'APPROVAL_REQUIRED' : 'PLAN_SELECTION_REQUIRED' });
         }
         if (ensured.created) {
           // ادامه با ساخت اپ
         }
-        const outcome = await runGuardedAction('liara_deploy', { app, path: src });
+        const outcome = await runGuardedAction('liara_deploy', { app, path: folder });
         return outcome.res;
       } catch (err) {
         return result(`❌ استقرار ناموفق بود: ${(err as Error).message}`, {
@@ -1293,12 +1330,14 @@ export function registerCompositeTools(server: McpServer): void {
       inputSchema: {
         app: z.string().min(1).describe("نام اپ در لیارا"),
         symptom: z.string().optional().describe("علائم گزارش‌شده توسط کاربر (اختیاری)"),
+        probePaths: z.array(z.string()).optional().describe("مسیرهای پروب؛ اگر نباشد از liara.json یا پیش‌فرض"),
+        projectPath: z.string().optional().describe("مسیر مطلق پروژه برای خواندن probePaths از liara.json"),
       },
       annotations: READ_ONLY_ANNOTATIONS,
     },
-    async ({ app, symptom }) => {
+    async ({ app, symptom, probePaths, projectPath }) => {
       try {
-        const run = await runDiagnosis(app, symptom);
+        const run = await runDiagnosis(app, symptom, { probePaths, projectPath });
         return result(run.text, {
           ok: true,
           analysisSource: run.llmUsed ? "llm" : "rules",
@@ -1337,10 +1376,11 @@ export function registerCompositeTools(server: McpServer): void {
           .array(z.object({ key: z.string(), value: z.string() }))
           .optional()
           .describe("متغیرهای محیطی برای set_env (اختیاری)"),
+        projectPath: z.string().optional().describe("مسیر مطلق پروژه برای code_fix"),
       },
       annotations: COMPOSITE_ANNOTATIONS,
     },
-    async ({ app, incidentId, option, planID, variables }) => {
+    async ({ app, incidentId, option, planID, variables, projectPath }) => {
       const baseline = loadBaseline(app);
       try {
         if (!baseline || baseline.incidentId !== incidentId) return result('❌ baseline متناظر رخداد پیدا نشد؛ diagnose را اجرا کنید.', { ok: false });
@@ -1428,7 +1468,13 @@ export function registerCompositeTools(server: McpServer): void {
         }
 
         /* code_fix — بدون نوشتن روی لیارا */
-        const suspects = findCodeSuspects(process.cwd(), baseline?.errorPattern);
+        let codeRoot = "";
+        try {
+          codeRoot = resolveProjectPath(projectPath ?? "");
+        } catch (err) {
+          return result((err as Error).message, { ok: false, code: "PROJECT_PATH_REQUIRED" });
+        }
+        const suspects = findCodeSuspects(codeRoot, baseline?.errorPattern);
         const guidance = [
           `🛠️ اصلاح کد (راه‌حل دائمی) — رخداد ${incidentId}`,
           baseline?.errorPattern

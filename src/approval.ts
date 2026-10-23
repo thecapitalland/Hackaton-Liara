@@ -25,6 +25,7 @@ export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "
 export const ALWAYS_APPROVAL_KINDS: readonly string[] = [
   "liara_create_app",
   "liara_create_network",
+  "liara_create_disk",
   "liara_resize",
   "liara_scale",
 ];

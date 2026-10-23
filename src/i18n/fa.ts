@@ -39,7 +39,7 @@ export const fa = {
   rejected: "❌ عملیات لغو شد؛ هیچ تغییری اعمال نشد.",
   approved: "✅ تأیید شد؛ عملیات اجرا شد.",
   appNotAllowed: (app: string, allowed: string[]) =>
-    `❌ اپ «${app}» در لیست مجاز نیست. اپ‌های مجاز: ${allowed.join("، ")}`,
+    `❌ اپ «${app}» نه در allowlist است و نه در owned-apps.json. allowlist: ${allowed.join("، ")}`,
 
   /** استقرار */
   deployDetect: "⏳ تشخیص استک پروژه...",

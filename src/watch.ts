@@ -2,7 +2,7 @@
  * Agate-Liara — پایش مداوم و رفع مشکل سیاست‌محور.
  *
  * هر چرخه:
- *  - سه مسیر مهم اپ را پروب می‌کند: `/`، `/api/challenges` و `/api/status`
+ *  - مسیرهای probePaths یا liara.json را پروب می‌کند؛ وگرنه `/`، `/api/challenges` و `/api/status`
  *  - خلاصهٔ متریک و رویدادها را می‌خواند
  *  - در صورت عبور از آستانه‌ها، diagnose را با ورودی env-blind اجرا می‌کند
  *  - اقدام درمانی کم‌خطر را از مسیر تأیید موجود (`runGuardedAction`) می‌فرستد
@@ -18,6 +18,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { config, isAllowedApp } from "./config.js";
+import { readProbePaths } from "./deploy/detect.js";
+import { resolveProjectPath, sanitizeProbePaths } from "./deploy/project-path.js";
 import { liaraGet } from "./liara/client.js";
 import { EP } from "./liara/endpoints.js";
 import { httpProbe } from "./probe.js";
@@ -40,6 +42,17 @@ import { faTime, firstText, result } from "./tools/common.js";
 
 /** مسیرهایی که پایش پیش‌فرض باید هر چرخه بسنجد. */
 export const WATCH_PATHS = ["/", "/api/challenges", "/api/status"] as const;
+
+/** پارامتر یا probePaths در liara.json. وگرنه مسیرهای دمو. */
+export function resolveWatchPaths(options: { probePaths?: string[]; projectPath?: string } = {}): string[] {
+  const fromParam = sanitizeProbePaths(options.probePaths);
+  if (fromParam.length) return fromParam;
+  if (options.projectPath) {
+    const fromFile = readProbePaths(resolveProjectPath(options.projectPath));
+    if (fromFile.length) return fromFile;
+  }
+  return [...WATCH_PATHS];
+}
 
 export interface WatchRouteResult {
   path: string;
@@ -163,6 +176,10 @@ export interface WatchOptions {
   cooldownSec?: number;
   /** پوشهٔ state؛ پیش‌فرض .agate */
   stateDir?: string;
+  /** مسیرهای پروب. اگر خالی باشد از projectPath/liara.json و بعد پیش‌فرض دمو. */
+  probePaths?: string[];
+  /** مسیر مطلق پروژه برای خواندن probePaths از liara.json. */
+  projectPath?: string;
   deps?: WatchDeps;
 }
 
@@ -744,7 +761,7 @@ export async function runWatchCheck(options: WatchOptions): Promise<WatchCheckRe
 
   const [routes, metrics, eventsResult] = await Promise.all([
     Promise.all(
-      WATCH_PATHS.map(async (routePath) => {
+      resolveWatchPaths(options).map(async (routePath) => {
         try {
           return routeResult(routePath, await probeRoute(app, routePath));
         } catch (err) {

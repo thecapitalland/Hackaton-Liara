@@ -100,6 +100,33 @@ test("تشخیص نشت حافظه با سری صعودی و لاگ heap", () =>
   assert.ok(res.hypotheses[0]!.evidenceIds.length > 0);
 });
 
+test("دو نمونهٔ صعودی memory_leak است و kill/die با حافظهٔ بالا crash_loop نیست", () => {
+  const now = new Date().toISOString();
+  const res = detectCauses({
+    ...baseInput,
+    logs: [],
+    events: [
+      { ts: now, type: "die", message: "die" },
+      { ts: now, type: "kill", message: "kill" },
+      { ts: now, type: "restart", message: "app restarted" },
+    ],
+    memory: {
+      name: "memory",
+      unit: "MB",
+      points: [
+        { ts: null, value: 100 },
+        { ts: null, value: 180 },
+      ],
+    },
+    plan: { planID: "small", ramMB: 512 },
+  });
+  const ids = res.hypotheses.map((item) => item.id);
+  assert.ok(ids.includes("memory_leak"));
+  assert.ok(ids.includes("oom"));
+  assert.equal(ids.includes("crash_loop"), false);
+  assert.equal(res.hypotheses.find((item) => item.id === "memory_leak")?.kind, "observed");
+});
+
 test("تشخیص خطای ۵xx از پروب و لاگ", () => {
   const logs = parseLogs([
     { level: "error", message: "TypeError: Cannot read properties of undefined (reading 'title')" },

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createServer } from '../src/index.js';
+import { PACKAGE_ROOT } from '../src/config.js';
 import { setElicitor } from '../src/approval.js';
 import { runGuardedAction } from '../src/tools/write.js';
 import { liaraPost } from '../src/liara/client.js';
@@ -60,7 +61,7 @@ test('deploy_project روی اپ موجود هم تأیید جداگانه می�
   const [ct,st] = InMemoryTransport.createLinkedPair();
   try {
     await Promise.all([server.connect(st),client.connect(ct)]);
-    const res = await client.callTool({name:'deploy_project',arguments:{path:'.',app:'agate-liara'}});
+    const res = await client.callTool({name:'deploy_project',arguments:{projectPath:PACKAGE_ROOT,app:'agate-liara'}});
     assert.equal((res.structuredContent as any)?.code,'APPROVAL_REQUIRED');
     assert.ok(methods.every(m => m === 'GET'));
   } finally {

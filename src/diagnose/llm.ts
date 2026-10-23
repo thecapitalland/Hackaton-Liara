@@ -8,6 +8,7 @@
  */
 import { z } from "zod";
 import { config } from "../config.js";
+import { assertPublicHostname } from "./resolver.js";
 import type { Evidence, Hypothesis, RemedyKind } from "../types.js";
 import { redact, redactSecrets } from '../redact.js';
 import { INJECTION_CONFIDENCE_CAP } from "./detectors.js";
@@ -69,6 +70,8 @@ export interface LlmPromptArgs {
   evidence: Evidence[];
   /** فقط راهکارهای مجاز؛ LLM نمی‌تواند راهکار جدید بسازد. */
   remedies?: RemedyOption[];
+  /** فقط برای تستی که fetch را جایگزین کرده است. مسیر محصول این را نمی‌فرستد. */
+  confirmHost?: () => Promise<void>;
 }
 
 /**
@@ -172,6 +175,7 @@ export async function rankWithLlm(args: LlmPromptArgs): Promise<LlmRankResult> {
   const allowedRemedies = new Set((args.remedies ?? []).map((remedy) => remedy.id));
 
   try {
+    await (args.confirmHost ?? (() => assertPublicHostname(config.llmBaseUrl)))();
     const url = `${config.llmBaseUrl.replace(/\/+$/, "")}/chat/completions`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 30_000);

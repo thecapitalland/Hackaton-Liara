@@ -50,7 +50,7 @@
 
 | سناریو | نتیجه | شاهد و محدوده |
 |---|---|---|
-| **leak** | **PASS** | `npm run demo:test` → حالت leak واقعاً حافظهٔ نگه‌داشته‌شده را بالا می‌برد؛ `npm test` → «تشخیص نشت حافظه با سری صعودی و لاگ heap» |
+| **leak** | **PASS (unit + live summary)** | دو GET پشت‌سرهم `metrics/summary` از ۲۶۷۵۹۱۶۸ به ۱۲۱۸۴۷۸۰۸ بایت رفت (`rising=true`). diagnose همان شاهد را `memory_leak` / observed گرفت. بعد از off، ری‌استارت تأییدشده حافظه را به `extMB=3.5` برگرداند |
 | **slow** | **PASS** | `npm run demo:test` → حالت slow پاسخ صفحهٔ اصلی را حدود ۳.۷ ثانیه تأخیر می‌دهد؛ `npm test` → «تشخیص کندی پاسخ وقتی CPU نرمال است» |
 | **blind** | **PASS (unit)** | `BUG_MODE` و رازهای رایج لاگ از پرامپت LLM حذف یا ماسک می‌شوند؛ `diagnose` مقدار env، فهرست کلیدها و بدنهٔ `/health` را وارد تشخیص نمی‌کند. `liara_status` نام کلیدها را جداگانه نشان می‌دهد |
 | **watch** | **PASS (unit) + live read-only** | ۹ نمونه از ۳ مسیر؛ ۵xx/timeout/قطع اتصال، outage، خطای تکیِ گذرا، آستانهٔ p50 ۱۵۰۰ms، cooldown و snapshot سالم env تست شده‌اند؛ اجرای تاریخی `npm run watch -- --once` روی اپ واقعی healthy و بدون incident بود |
@@ -62,12 +62,12 @@
 | بررسی | نتیجه | شاهد |
 |---|---|---|
 | `npm run typecheck` | **PASS** | `tsc -p tsconfig.json --noEmit` |
-| `npm test` | **PASS — 125/125** | 0 failed · شامل allowlist، لایهٔ Jev و fallback، سقف اطمینان، مهلت حلقه و توقف watch |
+| `npm test` | **PASS — 141/141** | 0 failed · شامل summary-memory، owned apps، projectPath، سقف بایتی و رد crash_loop |
 | `npm run build` | **PASS** | `dist` بازسازی شد |
-| `npm run smoke -- --offline` | **PASS** | stdio handshake واقعی، کشف **۳۳ ابزار**، ping |
-| `npm run smoke` | **PASS** | live list + HTTP probe، فقط read-only |
+| `npm run smoke -- --offline` | **PASS** | stdio handshake واقعی، کشف **۳۴ ابزار**، ping |
+| `npm run smoke` | **خواندن لیارا PASS؛ GapGPT در این فرآیند FAIL** | list و HTTP probe قبل از شکست PASS شدند. `dns.lookup` همین فرآیند برای `api.gapgpt.app` هنوز loopback است و IP دستی اضافه نشد. curl همان نام میزبان با resolver سیستم HTTP 200 داد |
 | `npm run demo:test` | **PASS — 8/8** | health، slow، error500، leak، POST ادمین، رد query string |
-| `npm run secret-scan` | **PASS** | **۸۸ فایل** قابل commit؛ کلید تنظیم‌شده/private-key marker یافت نشد (detector عمومی نیست) |
+| `npm run secret-scan` | **PASS** | **۱۰۲ فایل** قابل commit؛ کلید تنظیم‌شده/private-key marker یافت نشد (detector عمومی نیست) |
 | `node dist/index.js --help` | **PASS** | command/args/cwd، متغیرها و خلاصهٔ اقدام قابل‌بازگشت |
 | `git diff --check` | **PASS** | فقط هشدارهای line-ending ویندوز |
 
@@ -244,7 +244,7 @@ flowchart LR
 | `fixed` | پیش‌فرض وقتی LLM تنظیم نیست، یا مقدار صریح `fixed` | جمع‌آوری شواهد و رتبه‌بندی قاعده‌ای. این مسیر دست‌نخورده است. |
 | `agentic` | پیش‌فرض وقتی LLM تنظیم است و `INVESTIGATE_MODE` خالی یا `agentic` است | بررسی با مدل ابزار، سپس تصمیم Jev اگر `LLM_DECISION_MODEL` تنظیم باشد. |
 
-Allowlist: `liara_status` بدون کلید env، `liara_logs`، `liara_events`، `liara_metrics`، `liara_releases`، `http_probe` روی `/`، `/health`، `/api/challenges` و `/api/status`. ابزار نوشتن قبل از اجرا رد می‌شود. بودجه: ۱۰ ابزار، ۱۲۰ ثانیه، ۲۰ ثانیه برای هر فراخوانی مدل، و timeout جدا برای ابزار لیارا. اگر `LLM_DECISION_MODEL` خالی باشد، JSON خود حلقه مثل قبل تصمیم می‌گیرد. وگرنه ترتیب fallback این است: Jev، JSON مدل بررسی با یک repair، مدل `LLM_MODEL_FALLBACK`، سپس قواعد. فرضیهٔ تأییدنشده اقدام خودکار `watch` نمی‌سازد.
+Allowlist: `liara_status` بدون کلید env، `liara_logs`، `liara_events`، `liara_metrics` (شامل `metrics/summary`)، `liara_releases`، `http_probe` روی `/`، `/health`، `/api/challenges` و `/api/status` و هر مسیر اضافه‌ای که در پارامتر `probePaths` یا فیلد اختیاری `probePaths` داخل `liara.json` آمده باشد. ابزار نوشتن قبل از اجرا رد می‌شود. بودجه: ۱۰ ابزار، ۱۲۰ ثانیه، ۲۰ ثانیه برای هر فراخوانی مدل، و timeout جدا برای ابزار لیارا. اگر `LLM_DECISION_MODEL` خالی باشد، JSON خود حلقه مثل قبل تصمیم می‌گیرد. وگرنه ترتیب fallback این است: Jev، JSON مدل بررسی با یک repair، مدل `LLM_MODEL_FALLBACK`، سپس قواعد. فرضیهٔ تأییدنشده اقدام خودکار `watch` نمی‌سازد.
 
 گزارش بخش **مسیر بررسی** دارد: ابزار، دلیل، خلاصه، و زمان مدل در برابر ابزار. احتمال‌های Jev در گزارش و هزینه در ابتدای همان متن است تا در خط ممیزی `diagnose` بیاید.
 
@@ -259,14 +259,16 @@ Allowlist: `liara_status` بدون کلید env، `liara_logs`، `liara_events`�
 | error500 | http_5xx | restart | درست | jev | 2 | 16.3s | 16.4s | 1.6s | 0.000053 |
 | blind | http_5xx | restart | درست | jev | 2 | 7.6s | 6.9s | 1.6s | 0.000053 |
 
-error500 راهکار `restart` گرفت چون فهرست مجاز همان incident فقط `restart` بود: حالت دمو از پنل ادمین عوض می‌شود و ENV_UPDATE قابل‌بازگشت لیارا نیست. اگر baseline سالم، بعدش ENV_UPDATE و سپس 5xx باشد، فهرست مجاز فقط `rollback_last_env_change` است و Jev همان را انتخاب می‌کند. leak هنوز `crash_loop` است چون API لاگ لیارا خط heap/leak/OOM برنگرداند و رویدادها kill/die بودند، نه OOMKilled. اگر آن خط‌ها در شواهد باشند، قبل از برش ۱۵۰۰ نویسه می‌مانند و crash_loop فقط با restart غیر از OOM مجاز است.
+error500 راهکار `restart` گرفت چون فهرست مجاز همان incident فقط `restart` بود: حالت دمو از پنل ادمین عوض می‌شود و ENV_UPDATE قابل‌بازگشت لیارا نیست. اگر baseline سالم، بعدش ENV_UPDATE و سپس 5xx باشد، فهرست مجاز فقط `rollback_last_env_change` است و Jev همان را انتخاب می‌کند. جدول بالا همان اجرای ۱۱٫۱ ثانیه‌ای است و leak آنجا `crash_loop` ماند چون لاگ لیارا خط heap نداشت. اجرای بعدی، پایین‌تر، حافظه را از `metrics/summary` خواند.
 
-## ابزارها (۳۳ ابزار)
+اجرای بعدی leak در ۲۰۲۶-۱۰-۲۳: `GET /v1/projects/agate-liara/metrics/summary` هر بار یک نقطه برمی‌گرداند. نقطهٔ اول `26759168` و نقطهٔ بعدی `121847808` بود. این دو نمونهٔ پشت‌سرهم `rising=true` و `over80=false` شدند. مقدار حدود ۱۱۶ مگابایت است و از ۸۰٪ سقف ۵۱۲ مگابایت کمتر است. OpenAPI واحد را نگفته؛ مقدار بزرگ‌تر از ۶۵۵۳۶ بایت فرض می‌شود چون به‌عنوان مگابایت ناممکن است و با همین پاسخ زنده جور است. diagnose با همین شاهد `memory_leak` را observed و remedy را `restart` گذاشت. لایهٔ ثبت‌شدهٔ این اجرا `deepseek` بود. kill/die همراه این رشد حافظه دیگر `crash_loop` نیست. بعد از برگرداندن حالت دمو به off، ری‌استارت با کارت تأیید اجرا شد. خواندن بعدی `/health` مقدار `bugMode=off`، `memMB=6.5` و `extMB=3.5` بود.
+
+## ابزارها (۳۴ ابزار)
 
 | سطح | ابزارها |
 |---|---|
 | A: خواندنی | `ping`, `liara_status`, `liara_list_apps`, `liara_logs`, `liara_metrics`, `liara_events`, `liara_plans`, `liara_releases`, `http_probe`, `audit_tail`, `liara_plan_price`, `liara_release_status` |
-| B: نوشتنی (مطابق `APPROVAL_POLICY`) | `liara_create_app`, `liara_deploy`, `liara_set_env`, `rollback_last_env_change`, `liara_restart`, `liara_scale`, `liara_resize`, `liara_add_domain`, `liara_enable_ssl`, `propose_action`, `execute_action` |
+| B: نوشتنی (مطابق `APPROVAL_POLICY`) | `liara_create_app`, `liara_create_disk`, `liara_deploy`, `liara_set_env`, `rollback_last_env_change`, `liara_restart`, `liara_scale`, `liara_resize`, `liara_add_domain`, `liara_enable_ssl`, `propose_action`, `execute_action` |
 | ترکیبی | `deploy_project`, `diagnose`, `apply_fix`, `verify_fix`, `connect_domain`, `watch_after_deploy`, `watch_app` |
 | C: راهنما | `guide_domain_registration`, `guide_rollback`, `guide_github_deploy` |
 
@@ -300,13 +302,37 @@ node --env-file=.env demo-site/server.mjs
 
 صفحهٔ اصلی: `http://localhost:3000/` · پنل آزمایش: `GET /__agate-admin` · تغییر حالت فقط با `POST` و هدر `X-Admin-Key` · سلامت: `/health`. توروب و والکس خارج از محدودهٔ این ارائه هستند.
 
-سه حالت خراب‌سازی عمدی: افزایش Buffer حدود ۵MB/ثانیه، تأخیر ۲–۴ ثانیه و خطای واقعی `TypeError`. Buffer بیرون heap است؛ `extMB` و `rssMB` هم گزارش می‌شوند. این اپ فقط برای محیط دورریختنی است؛ حالت leak را بی‌مراقبت رها نکنید. برای انتشار، ایجنت را به `deploy_project(path="./demo-site", app="agate-liara")` هدایت کنید؛ **ریشهٔ MCP را به‌عنوان وب‌سایت دیپلوی نکنید**.
+سه حالت خراب‌سازی عمدی: افزایش Buffer حدود ۵MB/ثانیه، تأخیر ۲–۴ ثانیه و خطای واقعی `TypeError`. Buffer بیرون heap است؛ `extMB` و `rssMB` هم گزارش می‌شوند. این اپ فقط برای محیط دورریختنی است؛ حالت leak را بی‌مراقبت رها نکنید. برای انتشار، مسیر مطلق پروژه را بدهید؛ **ریشهٔ MCP را به‌عنوان وب‌سایت دیپلوی نکنید**.
+
+## نصب سراسری در Cursor و deploy از هر پروژه
+
+`deploy_project`، `liara_deploy` و اصلاح کد در `apply_fix` پارامتر `projectPath` می‌گیرند و باید مسیر مطلق باشد. مسیر نسبی و `.` رد می‌شوند. بسته‌بندی همان فیلتر قبلی است: `.env`، `.git`، `node_modules` و `.agate` داخل بسته نمی‌روند. `liara.json` پروژه برای `platform` (`node`، `docker`، `python`، `static`)، `port` و `disks` خوانده می‌شود. پلتفرم‌های `next` و `react` و بقیه در enum ساخت اپ لیارا نیستند؛ در آن صورت تشخیص از فایل‌ها انجام می‌شود و در گزارش گفته می‌شود.
+
+`disks` در `liara.json` آرایهٔ `{ "name", "mountTo" }` است. مستندات لیارا می‌گوید CLI هنگام `liara deploy` همان دیسک را وصل می‌کند. در OpenAPI رسمی (`paas.yaml`) ساخت دیسک `POST /v1/projects/{name}/disks` با بدنهٔ `{ name, size }` است و فهرست دیسک‌ها `GET /v1/projects/{id}/disks` است. مسیر جداگانه‌ای برای mount پیدا نشد. بدنهٔ release که این MCP می‌فرستد `sourceID`، `port`، `type`، `message` و `build` است و فیلد `disks` ندارد. mount حدس زده نمی‌شود. `liara_create_disk` ریسک `high` است و قبل از تأیید quote می‌سازد. در ۲۰۲۶-۱۰-۲۳ کلید `diskPrice`، `pricePerGB`، `diskMonthly` یا `disk_price` در `GET /v1/me` نبود، پس قیمت `null` ماند و عددی حدس زده نشد.
+
+state ممیزی، تأییدها و baselineها در `AGATE_STATE_DIR` می‌ماند. اگر خالی باشد مسیر ثابت `<package>/.agate` است، نه پوشهٔ پروژهٔ در حال deploy.
+
+اپی که خود MCP با `liara_create_app` و تأیید `high` بسازد، بعد از POST موفق در `.agate/owned-apps.json` ثبت می‌شود و نوشتن روی آن مجاز است. اپی که نه در `AGATE_ALLOWED_APPS` باشد و نه در این فایل، رد می‌شود. `watch` و `diagnose` برای اپ owned هم کار می‌کنند. مسیر پروب از پارامتر `probePaths` یا از `liara.json` می‌آید؛ اگر هیچ‌کدام نباشد همان سه مسیر دمو می‌ماند.
+
+بعد از ساخت موفق اپ، اگر `.env.example` یا کد کلید محیطی لازم داشته باشد، کارت `liara_set_env` ساخته می‌شود. کارت فقط نام کلیدها را نشان می‌دهد. تا مقدار را خودتان در تأیید بعدی ندهید، اجرا نمی‌شود و مقدار چاپ نمی‌شود.
+
+نصب در Cursor، از ریشهٔ همین مخزن:
+
+```powershell
+npm run build
+npm run install:cursor
+```
+
+این دستور `C:\Users\<user>\.cursor\mcp.json` را می‌خواند، یک نسخهٔ پشتیبان `mcp.json.bak-...` می‌سازد و فقط ورودی `agate-liara` را می‌نویسد. `command` خود `node` است، `args` مسیر مطلق `dist/index.js` است و `envFile` مسیر مطلق `.env` همین مخزن است. بقیهٔ سرورها دست نمی‌خورند و توکن داخل `mcp.json` نوشته نمی‌شود.
+
+در Cursor باید یک MCP به نام `agate-liara` ببینید. اگر فهرست سرورها باز بود، آن را یک‌بار خاموش و روشن کنید تا ابزارهای تازه، از جمله `deploy_project` با `projectPath`، دیده شوند. از پروژهٔ دیگر بگویید مسیر مطلق همان پروژه روی لیارا deploy شود. تا کارت تأیید را تأیید نکنید هیچ اپی ساخته نمی‌شود.
 
 ## محدودیت‌های API لیارا
 
 | محدودیت | اثر | رفتار جایگزین |
 |---|---|---|
 | rollback endpoint عمومی ندارد | برگشت کد/سورس از API ممکن نیست | `rollback_last_env_change` فقط env را از journal/baseline محلی برمی‌گرداند؛ برای کد، release قبلی را با تأیید تازه دوباره deploy کنید |
+| مسیر mount دیسک در OpenAPI نیست | `liara.json` دیسک را توصیف می‌کند ولی API ساخت release فیلد دیسک ندارد | `liara_create_disk` فقط دیسک را با تأیید می‌سازد؛ اتصال mount را CLI لیارا انجام می‌دهد و این MCP آن را حدس نمی‌زند |
 | log streaming ندارد | tail زندهٔ لاگ ممکن نیست | polling با بازهٔ محدود و پنجرهٔ ۱۰ دقیقه‌ای |
 | endpoint مستقل plans ندارد | catalog از مسیر استاندارد خوانده نمی‌شود | `GET /v1/me` و `plans.projects` / `projectBundlePlans` |
 | health-check API ندارد | سلامت سرویس از API قابل تأیید نیست | HTTP probe مستقل روی `/` و `/health`؛ بدنهٔ health parse نمی‌شود |

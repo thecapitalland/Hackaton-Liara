@@ -7,6 +7,11 @@ import path from "node:path";
 
 export type Platform = "node" | "docker" | "python" | "static" | "unknown";
 
+export interface DiskMount {
+  name: string;
+  mountTo: string;
+}
+
 export interface StackDetection {
   platform: Platform;
   /** پورت سرویس */
@@ -19,6 +24,10 @@ export interface StackDetection {
   exampleEnv: string[];
   /** اسکریپت/دستور اجرا */
   startCommand?: string;
+  /** disks در liara.json. در بدنهٔ release فرستاده نمی‌شود. */
+  disks?: DiskMount[];
+  /** نام فایل Dockerfile اگر پیدا شده باشد. */
+  dockerfile?: string;
   notes: string[];
 }
 
@@ -68,7 +77,9 @@ export function scanEnvUsage(files: string[]): string[] {
   const found = new Set<string>();
   const re = /process\.env(?:\.([A-Z0-9_]+)|\[\s*['"]([A-Z0-9_]+)['"]\s*\])/g;
   for (const file of files) {
-    if (!/\.(ts|js|mjs|cjs|tsx|jsx)$/i.test(file)) continue;
+    const nodeFile = /\.(ts|js|mjs|cjs|tsx|jsx)$/i.test(file);
+    const pythonFile = /\.py$/i.test(file);
+    if (!nodeFile && !pythonFile) continue;
     let content: string;
     try {
       content = readFileSync(file, "utf8");
@@ -76,9 +87,12 @@ export function scanEnvUsage(files: string[]): string[] {
       continue;
     }
     if (content.length > 2_000_000) continue;
+    const pattern = nodeFile
+      ? re
+      : /os\.(?:environ\[\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\]|environ\.get\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]|getenv\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"])/g;
     let m: RegExpExecArray | null;
-    while ((m = re.exec(content)) !== null) {
-      const key = m[1] ?? m[2];
+    while ((m = pattern.exec(content)) !== null) {
+      const key = m[1] ?? m[2] ?? m[3];
       if (key) found.add(key);
     }
   }
@@ -117,29 +131,40 @@ export function detectStack(root: string, requestedApp?: string): StackDetection
   let platform: Platform = "unknown";
   let port: number | undefined;
   let startCommand: string | undefined;
+  const declared =
+    typeof liaraJson?.["platform"] === "string" ? String(liaraJson["platform"]).trim().toLowerCase() : "";
+  const declaredDirect = (["node", "docker", "python", "static"] as const).find((item) => item === declared);
 
   const dockerfile = ["Dockerfile", "dockerfile", "Dockerfile.prod"].find((f) =>
     existsSync(path.join(resolvedRoot, f)),
   );
-  if (dockerfile) {
-    platform = "docker";
-    notes.push(`Dockerfile پیدا شد (${dockerfile}) → پلتفرم docker.`);
-  } else if (pkg) {
-    platform = "node";
-    const scripts = (pkg["scripts"] as Record<string, string> | undefined) ?? {};
-    const start = scripts["start"] ?? scripts["serve"] ?? undefined;
-    if (start) {
-      startCommand = `npm run start (${start})`;
-    } else if (scripts["dev"]) {
-      startCommand = `npm run dev (${scripts["dev"]})`;
+  const scripts = (pkg?.["scripts"] as Record<string, string> | undefined) ?? {};
+  const start = scripts["start"] ?? scripts["serve"] ?? undefined;
+  if (start) startCommand = `npm run start (${start})`;
+  else if (scripts["dev"]) startCommand = `npm run dev (${scripts["dev"]})`;
+
+  if (declaredDirect) {
+    platform = declaredDirect;
+    notes.push(`liara.json platform=${declaredDirect} بر تشخیص فایل‌ها اولویت دارد.`);
+  } else {
+    if (declared) {
+      notes.push(
+        `liara.json platform=${declared} در فهرست ساخت اپ (node، docker، python، static) نیست؛ تشخیص از روی فایل‌ها انجام شد.`,
+      );
     }
-    notes.push(`package.json پیدا شد → پلتفرم node${startCommand ? ` (${startCommand})` : ""}.`);
-  } else if (existsSync(path.join(resolvedRoot, "requirements.txt"))) {
-    platform = "python";
-    notes.push("requirements.txt پیدا شد → پلتفرم python.");
-  } else if (existsSync(path.join(resolvedRoot, "index.html"))) {
-    platform = "static";
-    notes.push("index.html پیدا شد → پلتفرم static.");
+    if (dockerfile) {
+      platform = "docker";
+      notes.push(`Dockerfile پیدا شد (${dockerfile}) → پلتفرم docker.`);
+    } else if (pkg) {
+      platform = "node";
+      notes.push(`package.json پیدا شد → پلتفرم node${startCommand ? ` (${startCommand})` : ""}.`);
+    } else if (existsSync(path.join(resolvedRoot, "requirements.txt"))) {
+      platform = "python";
+      notes.push("requirements.txt پیدا شد → پلتفرم python.");
+    } else if (existsSync(path.join(resolvedRoot, "index.html"))) {
+      platform = "static";
+      notes.push("index.html پیدا شد → پلتفرم static.");
+    }
   }
 
   // پورت
@@ -183,6 +208,53 @@ export function detectStack(root: string, requestedApp?: string): StackDetection
     requiredEnv,
     exampleEnv,
     startCommand,
+    disks: readDiskMounts(liaraJson),
+    ...(dockerfile ? { dockerfile } : {}),
     notes,
   };
+}
+
+function readDiskMounts(liaraJson: Record<string, unknown> | null): DiskMount[] {
+  const rows = liaraJson?.["disks"];
+  if (!Array.isArray(rows)) return [];
+  const out: DiskMount[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const name = (row as Record<string, unknown>)["name"];
+    const mountTo = (row as Record<string, unknown>)["mountTo"];
+    if (typeof name === "string" && name.trim() && typeof mountTo === "string" && mountTo.trim()) {
+      out.push({ name: name.trim(), mountTo: mountTo.trim() });
+    }
+  }
+  return out;
+}
+
+/** probePaths اختیاری در liara.json. فیلد رسمی لیارا نیست. */
+export function readProbePaths(root: string): string[] {
+  const file = path.join(root, "liara.json");
+  if (!existsSync(file)) return [];
+  const json = readJson(file);
+  const rows = json?.["probePaths"];
+  if (!Array.isArray(rows)) return [];
+  return rows.filter(
+    (item): item is string =>
+      typeof item === "string" && item.startsWith("/") && !item.startsWith("//") && !item.includes(".."),
+  );
+}
+
+/**
+ * disks در liara.json هنگام deploy.
+ * مستند رسمی: docs.liara.ir/paas/liarajson و disks/route — آرایهٔ {name, mountTo}.
+ * OpenAPI ساخت release (Deploy-releases) فقط sourceID، port و type دارد.
+ * ساخت دیسک: POST /v1/projects/{name}/disks با {name, size}.
+ * مسیر جداگانه‌ای برای mount در paas.yaml پیدا نشد؛ CLI لیارا mountTo را از liara.json می‌خواند.
+ */
+export function describeDiskDeploy(disks: DiskMount[]): string {
+  if (!disks.length) return "";
+  return [
+    `liara.json disks: ${disks.map((disk) => `${disk.name} → ${disk.mountTo}`).join("؛ ")}`,
+    "این مسیرها در POST /v2/projects/{name}/releases فرستاده نمی‌شوند. بدنهٔ release شامل sourceID، port، type، message و build است و فیلد disks ندارد.",
+    "ساخت دیسک با liara_create_disk است (POST /v1/projects/{name}/disks، بدنهٔ {name, size}).",
+    "اتصال mountTo را مستندات CLI به liara.json نسبت می‌دهد و در OpenAPI مسیر mount جداگانه‌ای نیست.",
+  ].join("\n");
 }
