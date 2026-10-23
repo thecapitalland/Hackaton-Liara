@@ -14,7 +14,14 @@ import { liaraGet, liaraPost, uploadSource, LiaraError } from "../liara/client.j
 import { EP } from "../liara/endpoints.js";
 import { unwrapRelease } from "../liara/release.js";
 import { detectCauses, parseEvents, parseLogs, parseSeries } from "../diagnose/detectors.js";
-import { rankWithLlm, RESTART_REMEDY, ROLLBACK_ENV_REMEDY, type LlmRankResult, type RemedyOption } from "../diagnose/llm.js";
+import {
+  rankWithLlm,
+  RESTART_REMEDY,
+  ROLLBACK_ENV_REMEDY,
+  MANUAL_ENV_REMEDY,
+  type LlmRankResult,
+  type RemedyOption,
+} from "../diagnose/llm.js";
 import {
   DEFAULT_EVIDENCE_WINDOW_MINUTES,
   filterEventsToWindow,
@@ -22,7 +29,10 @@ import {
 } from "../diagnose/window.js";
 import {
   ENV_CHANGE_WINDOW_SEC,
+  captureHealthyEnvBaseline,
+  findBaselineRollbackInfo,
   findLatestEnvChange,
+  hasEnvBaseline,
   type EnvChangeCandidate,
 } from "../env-history.js";
 import { detectStack, type StackDetection } from "../deploy/detect.js";
@@ -30,7 +40,11 @@ import { humanSize, packageSource } from "../deploy/package.js";
 import { httpProbe, probeSummary, sleep } from "../probe.js";
 import { askChoice } from "../approval.js";
 import { bullets, faTime, result } from "./common.js";
-import { extractDnsRecords, runGuardedAction } from "./write.js";
+import {
+  buildEnvRecoveryCardFromApi,
+  extractDnsRecords,
+  runGuardedAction,
+} from "./write.js";
 import { parsePlans } from "./read.js";
 import { fetchPlanCatalog, pairLabel } from '../liara/plans.js';
 import type {
@@ -403,6 +417,11 @@ export interface DiagnosisOptions {
   stateDir?: string;
   /** اگر false، LLM حتی با پیکربندی کامل فراخوانی نمی‌شود (تست/آفلاین). */
   llm?: boolean;
+  /**
+   * ثبت snapshot سالم env در diagnose. پیش‌فرض true است، ولی وقتی envChange
+   * تزریق شده باشد (مسیر تست/deterministic) خودکار غیرفعال می‌شود.
+   */
+  captureBaseline?: boolean;
 }
 
 async function gatherDiagnosis(
@@ -496,9 +515,29 @@ async function gatherDiagnosis(
   }
 
   /*
-   * env عمداً خوانده نمی‌شود: نه مقدار BUG_MODE و نه فهرست کلیدها.
+   * اگر اپ سالم است، snapshot کامل env فقط به‌صورت محلی (0600/gitignored)
+   * ثبت می‌شود. این snapshot هرگز به LLM یا گزارش تشخیص نمی‌رود و فقط در
+   * remediation برای diff استفاده می‌شود.
+   */
+  if (
+    options.captureBaseline !== false &&
+    options.envChange === undefined &&
+    !("error" in probe)
+  ) {
+    try {
+      const baseline = await captureHealthyEnvBaseline(app, probe, {
+        ...(options.stateDir ? { stateDir: options.stateDir } : {}),
+      });
+      if (baseline) notes.push("baseline سالم env برای rollback آینده ثبت شد.");
+    } catch {
+      notes.push("ثبت baseline سالم env ناموفق بود؛ تشخیص بدون آن ادامه می‌یابد.");
+    }
+  }
+
+  /*
+   * استدلال تشخیص env-blind می‌ماند: نه مقدار BUG_MODE و نه فهرست کلیدها.
    * فقط plan برای آستانهٔ CPU از متادیتای اپ گرفته می‌شود. برای انتخاب
-   * rollback فقط «وجود/زمان تغییر» از تاریخچه بررسی می‌شود، نه مقدارها.
+   * rollback فقط «وجود/زمان تغییر» و وجود baseline بررسی می‌شود، نه مقدارها.
    */
   let plan: PlanLimits | null = options.plan !== undefined ? options.plan : null;
   if (options.plan === undefined) {
@@ -521,17 +560,46 @@ async function gatherDiagnosis(
       envChange = await findLatestEnvChange(app, incidentAt, {
         windowSec: options.envChangeWindowSec ?? ENV_CHANGE_WINDOW_SEC,
         includeReleases: options.includeReleaseEnvEvents !== false,
+        // diagnose هرگز baseline diff را محاسبه نمی‌کند.
+        includeBaseline: false,
         ...(options.stateDir ? { stateDir: options.stateDir } : {}),
       });
     } catch {
       notes.push("تاریخچهٔ تغییرات env در دسترس نبود؛ rollback خودکار پیشنهاد نمی‌شود.");
     }
   }
-  const rollbackAvailable =
+  const journalRollbackAvailable =
     envChange?.revertable === true && envChange.changes.length > 0;
-  if (envChange && !rollbackAvailable) {
+
+  /*
+   * بررسی فقط-متادیتای baseline: وجود فایل و یک ENV_UPDATE بعد از آن.
+   * هیچ کلید/مقداری وارد استدلال تشخیص یا LLM نمی‌شود؛ diff واقعی فقط در
+   * apply_fix/rollback ساخته می‌شود.
+   */
+  const baselineExists = hasEnvBaseline(app, options.stateDir);
+  let baselineInfo: Awaited<ReturnType<typeof findBaselineRollbackInfo>> = null;
+  if (!journalRollbackAvailable && baselineExists) {
+    try {
+      baselineInfo = await findBaselineRollbackInfo(app, incidentAt, {
+        includeReleases: options.includeReleaseEnvEvents !== false,
+        ...(options.stateDir ? { stateDir: options.stateDir } : {}),
+      });
+    } catch {
+      notes.push("بررسی baseline سالم env ناموفق بود؛ rollback از baseline قابل پیشنهاد نیست.");
+    }
+  }
+  const rollbackAvailable = journalRollbackAvailable || Boolean(baselineInfo);
+  const manualEnvRecovery = !rollbackAvailable && !baselineExists && envChange !== null;
+
+  if (baselineInfo) {
     notes.push(
-      "تغییر env اخیری دیده شد، اما مقدار قبلی آن در تاریخچهٔ محلی ثبت نشده؛ rollback دقیق ممکن نیست.",
+      `baseline سالم env از ${faTime(baselineInfo.baselineAt)} در دسترس است؛ rollback فقط کلیدهای تغییرکرده را برمی‌گرداند.`,
+    );
+  } else if (envChange && !journalRollbackAvailable) {
+    notes.push(
+      manualEnvRecovery
+        ? "تغییر env اخیری دیده شد و baseline سالم وجود ندارد؛ به‌جای ری‌استارت، کارت ۳ گزینه‌ای بازیابی دستی env پیشنهاد می‌شود."
+        : "تغییر env اخیری دیده شد، اما مقدار قبلی آن در تاریخچهٔ محلی یا baseline ثبت نشده؛ rollback دقیق ممکن نیست.",
     );
   }
 
@@ -550,18 +618,28 @@ async function gatherDiagnosis(
 
   /* راهکار rollback فقط وقتی در فهرست LLM می‌آید که واقعاً قابل اجرا باشد. */
   if (rollbackAvailable) {
-    const rollbackText = "برگرداندن آخرین تغییر env قبل از رخداد (فقط همان کلیدها).";
+    const rollbackText = "برگرداندن آخرین تغییر env قبل از رخداد (فقط کلیدهای تغییرکرده).";
     for (const hypothesis of detectionResult.hypotheses) {
       if (!hypothesis.remedies.includes("rollback_last_env_change")) {
         hypothesis.remedies = ["rollback_last_env_change", ...hypothesis.remedies];
         hypothesis.remedyText = [rollbackText, ...hypothesis.remedyText];
       }
     }
+  } else if (manualEnvRecovery) {
+    const manualText =
+      "بازیابی دستی env: انتخاب کلید مشکوک و واردکردن مقدار قبلی با set_env (کارت ۳ گزینه‌ای).";
+    for (const hypothesis of detectionResult.hypotheses) {
+      if (!hypothesis.remedies.includes("set_env")) {
+        hypothesis.remedies = ["set_env", ...hypothesis.remedies];
+        hypothesis.remedyText = [manualText, ...hypothesis.remedyText];
+      }
+    }
   }
 
   const remedies: RemedyOption[] = [];
   if (rollbackAvailable) remedies.push(ROLLBACK_ENV_REMEDY);
-  remedies.push(RESTART_REMEDY);
+  else if (manualEnvRecovery) remedies.push(MANUAL_ENV_REMEDY);
+  else remedies.push(RESTART_REMEDY);
 
   const llm: LlmRankResult =
     options.llm === false
@@ -579,8 +657,16 @@ async function gatherDiagnosis(
         });
   if (llm.note) notes.push(llm.note);
 
-  const selectedRemedy: RemedyKind = llm.selectedRemedy ?? (rollbackAvailable ? "rollback_last_env_change" : "restart");
-  const remedySource: "llm" | "rules" = llm.selectedRemedy ? "llm" : "rules";
+  let selectedRemedy: RemedyKind =
+    llm.selectedRemedy ?? (rollbackAvailable ? "rollback_last_env_change" : manualEnvRecovery ? "set_env" : "restart");
+  let remedySource: "llm" | "rules" = llm.selectedRemedy ? "llm" : "rules";
+  // قاعدهٔ ایمنی: وقتی baseline نیست و تغییر env دیده شده، LLM هم اجازهٔ
+  // پیشنهاد ری‌استارت را ندارد.
+  if (manualEnvRecovery && selectedRemedy === "restart") {
+    selectedRemedy = "set_env";
+    remedySource = "rules";
+    notes.push("پیشنهاد ری‌استارت به‌دلیل نبود baseline و وجود تغییر env نادیده گرفته شد؛ بازیابی دستی env انتخاب شد.");
+  }
 
   return {
     incidentId: `inc_${randomUUID().slice(0, 8)}`,
@@ -602,7 +688,11 @@ async function gatherDiagnosis(
     selectedRemedy,
     remedySource,
     rollbackAvailable,
-    ...(envChange ? { envChangeAt: envChange.at, envChangeSource: envChange.source } : {}),
+    ...(baselineInfo
+      ? { envChangeAt: baselineInfo.releaseAt, envChangeSource: "baseline" }
+      : envChange
+        ? { envChangeAt: envChange.at, envChangeSource: envChange.source }
+        : {}),
   };
 }
 
@@ -629,13 +719,13 @@ function planFromProject(obj: Record<string, unknown>, planID: string): PlanLimi
 export function remedyLabel(kind: RemedyKind): string {
   switch (kind) {
     case "rollback_last_env_change":
-      return "برگرداندن آخرین تغییر env قبل از رخداد (کم‌خطر)";
+      return "برگرداندن کلیدهای تغییرکردهٔ env به مقدار baseline/تاریخچه (ریسک متوسط، با تأیید)";
     case "restart":
       return "ری‌استارت سرویس (کم‌خطر)";
     case "resize":
       return "تغییر پلن";
     case "set_env":
-      return "تنظیم متغیر محیطی";
+      return "بازیابی دستی env: ورود کلید مشکوک و مقدار قبلی (کارت ۳ گزینه‌ای)";
     case "scale":
       return "روشن/خاموش‌کردن سرویس";
     case "code_fix":
@@ -902,7 +992,7 @@ export function registerCompositeTools(server: McpServer): void {
     {
       title: "تشخیص علت رخداد با شواهد",
       description:
-        "جمع‌آوری لاگ و رویدادهای ۱۰ دقیقهٔ اخیر، متریک (۳۰ دقیقه) و ۳ پروب سلامت؛ سپس رتبه‌بندی ۳ علت محتمل با اطمینان و شناسهٔ شواهد + راهکارها و انتخاب یک اقدام کم‌خطر. خروجی ساخت‌یافته = گزارش رخداد.",
+        "جمع‌آوری لاگ و رویدادهای ۱۰ دقیقهٔ اخیر، متریک (۳۰ دقیقه) و ۳ پروب سلامت؛ سپس رتبه‌بندی ۳ علت محتمل با اطمینان و شناسهٔ شواهد + راهکارها. اگر اپ سالم باشد، snapshot env فقط محلی (0600/gitignored) برای rollback آینده ثبت می‌شود و به LLM نمی‌رود. خروجی ساخت‌یافته = گزارش رخداد.",
       inputSchema: {
         app: z.string().min(1).describe("نام اپ در لیارا"),
         symptom: z.string().optional().describe("علائم گزارش‌شده توسط کاربر (اختیاری)"),
@@ -938,7 +1028,7 @@ export function registerCompositeTools(server: McpServer): void {
     {
       title: "اعمال راهکار",
       description:
-        "اعمال یکی از راهکارهای علت شناسایی‌شده: restart | rollback_last_env_change | resize | code_fix | set_env. عملیات نوشتنی نیازمند تأیید است؛ code_fix فقط دستورالعمل دقیق برای ایجنت می‌دهد.",
+        "اعمال یکی از راهکارهای علت شناسایی‌شده: restart | rollback_last_env_change | resize | code_fix | set_env. rollback فقط کلیدهای تغییرکرده را به baseline برمی‌گرداند (ریسک medium، نیازمند تأیید). اگر baseline موجود نباشد، به‌جای restart کارت ۳ گزینه‌ای بازیابی دستی env برمی‌گردد؛ code_fix فقط دستورالعمل می‌دهد.",
       inputSchema: {
         app: z.string().min(1).describe("نام اپ در لیارا"),
         incidentId: z.string().min(1).describe("شناسهٔ رخداد از diagnose"),
@@ -966,9 +1056,29 @@ export function registerCompositeTools(server: McpServer): void {
         }
 
         if (option === "rollback_last_env_change") {
+          const incidentAt = baseline.incidentAt ?? baseline.observedAt;
+          let candidate: EnvChangeCandidate | null = null;
+          try {
+            // diff واقعی فقط اینجا (remediation) ساخته می‌شود، نه در diagnose.
+            candidate = await findLatestEnvChange(app, incidentAt, {
+              includeBaseline: true,
+            });
+          } catch {
+            candidate = null;
+          }
+          if (!candidate || !candidate.revertable || !candidate.changes.length) {
+            const reason =
+              "برای این رخداد تغییر env قابل‌بازگشتی با مقدار قبلی پیدا نشد؛ rollback دقیق ممکن نیست.";
+            const card = await buildEnvRecoveryCardFromApi(app, reason);
+            return result(`${card.text}\n🆔 رخداد: ${incidentId}`, {
+              incidentId,
+              ...card.structured,
+            });
+          }
           const out = await runGuardedAction("rollback_last_env_change", {
             app,
-            incidentAt: baseline.incidentAt ?? baseline.observedAt,
+            incidentAt,
+            expectedKeys: candidate.keys,
           });
           return result(
             `${out.res.content?.[0]?.type === "text" ? out.res.content[0].text : ""}\n🆔 رخداد: ${incidentId}`,
@@ -1004,10 +1114,14 @@ export function registerCompositeTools(server: McpServer): void {
         if (option === "set_env") {
           const vars = variables ?? [];
           if (!vars.length) {
-            return result(
-              "❌ برای set_env باید کلید و مقدار متغیرها را بدهید (variables).",
-              { ok: false },
+            const card = await buildEnvRecoveryCardFromApi(
+              app,
+              "برای بازیابی دستی env، کلید مشکوک و مقدار قبلی را مشخص کنید؛ baseline سالم برای rollback دقیق وجود ندارد.",
             );
+            return result(`${card.text}\n🆔 رخداد: ${incidentId}`, {
+              incidentId,
+              ...card.structured,
+            });
           }
           const out = await runGuardedAction("liara_set_env", { app, variables: vars });
           return result(

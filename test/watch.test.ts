@@ -20,6 +20,7 @@ import {
   detectWatchTriggers,
   eventTimestampSec,
   isRestartEvent,
+  isWatchSnapshotHealthy,
   remediationAudit,
   routeResult,
   runWatchCheck,
@@ -144,6 +145,59 @@ test("watchProbeResult همان ۹ نمونه و ۳ خطای ۵۰۰ چرخه ر�
   assert.equal(p.p50, 3200);
   assert.equal(p.ok, false);
   assert.equal(p.url, `https://${app}.liara.run/`);
+});
+
+test("چرخهٔ سالم snapshot env را ثبت می‌کند و چرخهٔ ناسالم ثبت نمی‌کند", async () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "agate-watch-baseline-"));
+  try {
+    let captures = 0;
+    const healthy = await runWatchCheck({
+      app,
+      stateDir,
+      cooldownSec: 60,
+      deps: {
+        now: () => new Date("2026-10-22T12:00:00.000Z"),
+        probeRoute: async () => probe([200, 200, 200], 120),
+        readMetrics: async () => ({ available: true, cpu: 1, memory: 40 }),
+        readEvents: async () => [],
+        captureBaseline: async (target, dir) => {
+          captures += 1;
+          assert.equal(target, app);
+          assert.equal(dir, stateDir);
+          return null;
+        },
+        audit: () => undefined,
+      },
+    });
+    assert.equal(healthy.triggers.length, 0);
+    assert.equal(captures, 1);
+    assert.equal(isWatchSnapshotHealthy(healthy.snapshot), true);
+
+    const unhealthy = await runWatchCheck({
+      app,
+      stateDir,
+      cooldownSec: 60,
+      deps: {
+        now: () => new Date("2026-10-22T12:05:00.000Z"),
+        probeRoute: async (_target, routePath) =>
+          routePath === "/" ? probe([500, 500, 500], 120) : probe([200, 200, 200], 120),
+        readMetrics: async () => ({ available: true, cpu: 1, memory: 40 }),
+        readEvents: async () => [],
+        captureBaseline: async () => {
+          captures += 1;
+        },
+        diagnose: async () => diagnosis("restart", false),
+        remediate: async () => automaticRemediation(),
+        audit: () => undefined,
+      },
+      remediate: false,
+    });
+    assert.ok(unhealthy.triggers.length > 0);
+    assert.equal(captures, 1);
+    assert.equal(isWatchSnapshotHealthy(unhealthy.snapshot), false);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
 });
 
 test("diagnose نمونه‌های همان چرخه و انتخاب راهکار را دریافت می‌کند", async () => {
@@ -406,13 +460,13 @@ test("اولین چرخه رویدادهای قدیمی را هشدار نمی�
   }
 });
 
-test("اقدام rollback از همان سیاست تأیید عبور می‌کند: strict تأیید، balanced low خودکار", () => {
+test("اقدام rollback ریسک medium دارد: strict و balanced هر دو تأیید می‌خواهند", () => {
   const params = { app, incidentAt: "2026-10-23T12:00:00.000Z" };
 
   const strict = decideApproval({
     tool: "rollback_last_env_change",
     params,
-    declaredRisk: "low",
+    declaredRisk: "medium",
     policy: "strict",
   });
   assert.equal(strict.requiresApproval, true);
@@ -421,13 +475,13 @@ test("اقدام rollback از همان سیاست تأیید عبور می‌ک
   const balanced = decideApproval({
     tool: "rollback_last_env_change",
     params,
-    declaredRisk: "low",
+    declaredRisk: "medium",
     policy: "balanced",
   });
-  assert.equal(balanced.risk, "low");
-  assert.equal(balanced.requiresApproval, false);
-  assert.equal(balanced.automatic, true);
-  assert.match(balanced.autoNoticeFa ?? "", /balanced/);
+  assert.equal(balanced.risk, "medium");
+  assert.equal(balanced.requiresApproval, true);
+  assert.equal(balanced.automatic, false);
+  assert.match(balanced.reasonFa, /medium\/high/);
 
   const setEnv = decideApproval({
     tool: "liara_set_env",

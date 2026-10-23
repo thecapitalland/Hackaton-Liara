@@ -8,10 +8,11 @@
  *  - اقدام درمانی کم‌خطر را از مسیر تأیید موجود (`runGuardedAction`) می‌فرستد
  *  - رخداد را در audit.jsonl ثبت و تا پایان cooldown از هشدار تکراری جلوگیری می‌کند
  *
- * این ماژول هیچ مقدار env را برای تشخیص نمی‌خواند. اقدام درمانی کم‌خطر
- * `rollback_last_env_change` است: آخرین تغییر env قبل از رخداد را برمی‌گرداند
- * و اگر تغییر قابل‌بازگشتی نبود، `restart` را انتخاب می‌کند. اقدام بخشی از
- * تشخیص نیست و فقط پس از تشخیص و از مسیر APPROVAL_POLICY اجرا/پیشنهاد می‌شود.
+ * این ماژول هیچ مقدار env را برای تشخیص نمی‌خواند. در چرخهٔ سالم، snapshot
+ * env فقط به‌صورت محلی (0600/gitignored) ثبت می‌شود تا rollback آینده دقیق
+ * باشد. اقدام درمانی `rollback_last_env_change` است و اگر baseline/تاریخچه
+ * وجود نداشت، به‌جای restart کارت ۳ گزینه‌ای بازیابی دستی env نمایش داده
+ * می‌شود. اقدام بخشی از تشخیص نیست و از مسیر APPROVAL_POLICY می‌گذرد.
  */
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -28,9 +29,14 @@ import {
   type DiagnosisOptions,
   type DiagnosisRun,
 } from "./tools/composite.js";
-import { runGuardedAction, type GuardedOutcome } from "./tools/write.js";
+import {
+  buildEnvRecoveryCardFromApi,
+  runGuardedAction,
+  type GuardedOutcome,
+} from "./tools/write.js";
+import { BASELINE_MAX_P50_MS, captureEnvBaseline } from "./env-history.js";
 import { writeAudit, type AuditApproval, type AuditEntry } from "./audit.js";
-import { faTime, firstText } from "./tools/common.js";
+import { faTime, firstText, result } from "./tools/common.js";
 
 /** مسیرهایی که پایش پیش‌فرض باید هر چرخه بسنجد. */
 export const WATCH_PATHS = ["/", "/api/challenges", "/api/status"] as const;
@@ -82,7 +88,7 @@ export interface WatchCooldown {
 }
 
 export interface WatchRemediation {
-  kind: "rollback_last_env_change" | "liara_restart" | "unknown";
+  kind: "rollback_last_env_change" | "liara_restart" | "manual_env_recovery" | "unknown";
   executed: boolean;
   approvalId?: string;
   /** نتیجهٔ ممیزی: pending، approved، auto:balanced، … */
@@ -136,6 +142,8 @@ export interface WatchDeps {
   remediate?: (app: string, context?: WatchRemediationContext) => Promise<GuardedOutcome>;
   audit?: (entry: AuditEntry) => void;
   now?: () => Date;
+  /** ثبت snapshot سالم؛ در تست‌های deterministic با deps تزریق می‌شود. */
+  captureBaseline?: (app: string, stateDir: string) => Promise<unknown>;
 }
 
 export interface WatchOptions {
@@ -275,6 +283,23 @@ export function computeWatchStats(routes: WatchRouteResult[]): Pick<
 
   const rate500Pct = totalSamples > 0 ? (count500 / totalSamples) * 100 : 0;
   return { totalSamples, count500, rate500Pct, maxP50, maxP50Path };
+}
+
+/**
+ * «سالم» برای ثبت baseline: ۰ خطای ۵۰۰، همهٔ نمونه‌ها 2xx، و p50 بدترین
+ * مسیر در محدودهٔ عادی. اگر حتی یک مسیر unavailable باشد، baseline ثبت نمی‌شود.
+ */
+export function isWatchSnapshotHealthy(snapshot: WatchSnapshot): boolean {
+  if (snapshot.totalSamples === 0 || snapshot.count500 !== 0) return false;
+  if (snapshot.maxP50 === null || snapshot.maxP50 > BASELINE_MAX_P50_MS) return false;
+  return snapshot.routes.every(
+    (route) =>
+      route.available &&
+      route.statuses.length > 0 &&
+      route.statuses.every(
+        (status) => status !== null && status >= 200 && status < 300,
+      ),
+  );
 }
 
 /**
@@ -463,7 +488,7 @@ async function defaultDiagnose(
 /**
  * اقدام درمانی کم‌خطر:
  *  - اگر LLM/قاعده rollback_last_env_change را انتخاب کرده باشد، همان را اجرا می‌کند.
- *  - اگر تغییر env قابل‌بازگشتی نبود یا مقدار قبلی موجود نبود، restart را اجرا می‌کند.
+ *  - اگر baseline/مقدار قبلی نبود، به‌جای restart کارت ۳ گزینه‌ای دستی می‌دهد.
  *  - در strict، rollback/restart از همان دروازهٔ تأیید عبور می‌کنند و در حالت
  *    pending هرگز به‌صورت خودکار به اقدام دیگری نمی‌پرند.
  */
@@ -474,25 +499,21 @@ async function defaultRemediate(
   const selected = context?.selectedRemedy ??
     (context?.rollbackAvailable ? "rollback_last_env_change" : "restart");
 
-  if (selected === "rollback_last_env_change" && context?.rollbackAvailable !== false) {
-    const outcome = await runGuardedAction("rollback_last_env_change", {
+  if (selected === "rollback_last_env_change") {
+    // اگر rollback منبع دقیقی نداشته باشد، action خودش کارت ۳ گزینه‌ای
+    // برمی‌گرداند؛ اینجا هرگز به restart fallback نمی‌کنیم.
+    return runGuardedAction("rollback_last_env_change", {
       app,
       incidentAt: context?.incidentAt,
     });
-    const content = (outcome.res.structuredContent ?? {}) as Record<string, unknown>;
-    const fallbackCode = String(content["code"] ?? "");
-    if (
-      !outcome.executed &&
-      [
-        "NO_RECENT_ENV_CHANGE",
-        "ENV_HISTORY_WITHOUT_VALUES",
-        "ENV_CHANGED_SINCE",
-        "INVALID_INCIDENT_AT",
-      ].includes(fallbackCode)
-    ) {
-      return runGuardedAction("liara_restart", { app });
-    }
-    return outcome;
+  }
+
+  if (selected === "set_env") {
+    const card = await buildEnvRecoveryCardFromApi(
+      app,
+      "تغییر env دیده شده اما baseline سالم یا مقدار قبلی در دسترس نیست؛ بازیابی دستی انتخاب امن‌تری از ری‌استارت است.",
+    );
+    return { res: result(card.text, card.structured), executed: false };
   }
 
   return runGuardedAction("liara_restart", { app });
@@ -506,6 +527,10 @@ export function remediationAudit(outcome: GuardedOutcome | null): AuditApproval 
   const content = (outcome.res.structuredContent ?? {}) as Record<string, unknown>;
   if (content["code"] === "APPROVAL_REQUIRED") return "pending";
   if (content["code"] === "REJECTED") return "rejected";
+  // کارت ۳ گزینه‌ای فقط انتخاب است و هیچ نوشتنی انجام نمی‌دهد.
+  if (content["action"] === "env_recovery_options" || content["code"] === "ENV_BASELINE_MISSING") {
+    return "not-required";
+  }
   if (content["approvalMode"] === "automatic") {
     const policy = String(content["approvalPolicy"] ?? "");
     if (policy === "strict" || policy === "balanced" || policy === "auto") {
@@ -526,9 +551,11 @@ function remediationFromOutcome(
   const kind: WatchRemediation["kind"] =
     action === "rollback_last_env_change"
       ? "rollback_last_env_change"
-      : action === "restart"
-        ? "liara_restart"
-        : preferred;
+      : action === "env_recovery_options"
+        ? "manual_env_recovery"
+        : action === "restart"
+          ? "liara_restart"
+          : preferred;
   return {
     kind,
     executed: outcome.executed,
@@ -715,6 +742,26 @@ export async function runWatchCheck(options: WatchOptions): Promise<WatchCheckRe
   };
 
   const triggers = detectWatchTriggers(snapshot, newEvents);
+
+  /*
+   * چرخهٔ سالم = snapshot کامل env برای rollback آینده. در تست‌های
+   * deterministic که deps تزریق شده و captureBaseline ندارند، شبکه صدا زده
+   * نمی‌شود. خطای ثبت baseline هرگز خودش رخداد نمی‌سازد.
+   */
+  if (isWatchSnapshotHealthy(snapshot)) {
+    const captureBaseline =
+      deps.captureBaseline ??
+      (options.deps
+        ? async () => null
+        : (target: string, dir: string) =>
+            captureEnvBaseline(target, { stateDir: dir }));
+    try {
+      await captureBaseline(app, stateDir);
+    } catch {
+      /* baseline اختیاری است؛ پایش نباید به‌خاطر آن متوقف شود. */
+    }
+  }
+
   const currentFingerprint = triggersFingerprint(triggers);
   const rawCooldown = cooldownStatus(state, now, cooldownSec);
   // cooldown فقط هشدار «همان» مشکل را خفه می‌کند؛ یک رخداد متفاوت باید دیده شود.
@@ -765,7 +812,9 @@ export async function runWatchCheck(options: WatchOptions): Promise<WatchCheckRe
       const preferredKind: WatchRemediation["kind"] =
         diagnosis.selectedRemedy === "rollback_last_env_change"
           ? "rollback_last_env_change"
-          : "liara_restart";
+          : diagnosis.selectedRemedy === "set_env"
+            ? "manual_env_recovery"
+            : "liara_restart";
       try {
         remediation = remediationFromOutcome(
           await remediate(app, {

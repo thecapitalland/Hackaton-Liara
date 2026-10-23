@@ -33,12 +33,16 @@ import { quoteCreate, assertQuoteUnchanged, pairLabel } from '../liara/plans.js'
 import {
   ENV_CHANGE_WINDOW_SEC,
   diffEnv,
+  envDiffSummary,
   findLatestEnvChange,
+  getProjectEnvs,
   recordEnvChange,
   type EnvChangeCandidate,
   type EnvChangeKind,
   type EnvVar,
 } from "../env-history.js";
+
+export { getProjectEnvs };
 
 const WRITE_ANNOTATIONS = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } as const;
 
@@ -58,6 +62,18 @@ export interface ActionSpec {
   describe(params: Record<string, unknown>): string;
   /** گزینه‌های انتخاب در elicitation */
   choices(params: Record<string, unknown>): ApprovalChoice[];
+  /**
+   * بررسی فقط‌خواندنی قبل از ساخت کارت تأیید. می‌تواند پارامترها را غنی کند
+   * (مثل expectedKeys) یا اگر عملیات اصلاً منبع امنی ندارد، کارت راهنما
+   * برگرداند و از ساخت تأیید بی‌مورد جلوگیری کند.
+   */
+  preflight?: (
+    params: Record<string, unknown>,
+  ) => Promise<
+    | { ok: true; params: Record<string, unknown> }
+    | { ok: false; result: ActionResult }
+    | void
+  >;
   /** اجرای عملیات */
   run(params: Record<string, unknown>): Promise<ActionResult>;
   /** آیا عملیات به اپ وابسته است؟ (بررسی allowlist) */
@@ -79,6 +95,8 @@ const actionSchemas: Record<string, z.ZodType> = {
     app: appName,
     incidentAt: z.string().min(1).optional(),
     windowSec: z.number().int().min(60).max(3600).optional(),
+    /** فقط برای نمایش دقیق در کارت تأیید؛ اجرا دوباره diff را می‌سازد. */
+    expectedKeys: z.array(z.string()).optional(),
   }),
   liara_add_domain: z.object({ app: appName, domain: z.string().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/i) }),
   liara_enable_ssl: z.object({ domain: z.string().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/i) }),
@@ -113,21 +131,95 @@ const SIMPLE_CHOICES: ApprovalChoice[] = [
   { value: "cancel", labelFa: "لغو", descriptionFa: "بدون هیچ تغییری" },
 ];
 
-/* ─────────────────────────── کمکی‌ها ─────────────────────────── */
+/** کارت ۳ گزینه‌ای وقتی baseline سالم برای rollback دقیق وجود ندارد. */
+export const ENV_RECOVERY_CHOICES: ApprovalChoice[] = [
+  {
+    value: "manual_set_env",
+    labelFa: "الف) ورود دستی کلید مشکوک و مقدار قبلی (پیشنهادی)",
+    recommended: true,
+    descriptionFa:
+      "کلید مشکوک و مقدار قبلی را وارد کنید؛ سپس با set_env و تأیید strict اعمال می‌شود.",
+  },
+  {
+    value: "restart_with_warning",
+    labelFa: "ب) ری‌استارت با هشدار",
+    descriptionFa:
+      "هشدار صریح: چون علت در env است، ری‌استارت به‌احتمال زیاد مشکل را رفع نمی‌کند.",
+  },
+  {
+    value: "report_only",
+    labelFa: "ج) هیچ کاری نکن و فقط گزارش بده",
+    descriptionFa: "هیچ تغییری روی سرویس اعمال نمی‌شود.",
+  },
+];
 
-export async function getProjectEnvs(app: string): Promise<EnvVar[]> {
-  const { data } = await liaraGet<Record<string, unknown>>(EP.getProject(app));
-  const project = (data?.project ?? data) as Record<string, unknown>;
-  const envs = project["envs"];
-  if (!Array.isArray(envs)) throw new Error('ساختار envs شناخته نشد؛ برای جلوگیری از حذف متغیرها عملیات متوقف شد.');
-  return envs.map((e) => {
-    if (e && typeof e === "object") {
-      const o = e as Record<string, unknown>;
-      return { key: String(o["key"] ?? ""), value: String(o["value"] ?? "") };
-    }
-    return { key: String(e), value: "" };
-  });
+export interface EnvRecoveryCard {
+  text: string;
+  structured: Record<string, unknown>;
 }
+
+/**
+ * کارت انتخاب/تأیید بازیابی env. فقط کلید و مقدار ماسک‌شده را نشان می‌دهد؛
+ * هیچ مقدار خامی در متن یا structured قرار نمی‌گیرد. این کارت خودش هیچ
+ * نوشتنی انجام نمی‌دهد و برای هر اقدام واقعی، مسیر تأیید جداگانه لازم است.
+ */
+export function buildEnvRecoveryCard(
+  app: string,
+  current: EnvVar[],
+  reasonFa = "baseline سالم env برای این اپ ثبت نشده است.",
+): EnvRecoveryCard {
+  const masked = current
+    .map((row) => ({ key: row.key, value: maskValue(row.value) }))
+    .sort((a, b) => a.key.localeCompare(b.key));
+  const keyLines = masked.length
+    ? masked.map((row) => `• ${row.key}=${row.value}`).join("\n")
+    : "• (فهرست env خالی است)";
+  const summaryFa =
+    `بازیابی env اپ «${app}» بدون baseline سالم — انتخاب یکی از ۳ گزینه`;
+  const impact =
+    "هیچ تغییری تا انتخاب شما و تأیید جداگانهٔ اقدام نوشتنی اعمال نمی‌شود.";
+  const text = [
+    "🛟 کارت تأیید/انتخاب بازیابی env",
+    `⚠️ ${reasonFa}`,
+    "ری‌استارت به‌تنهایی مشکل env را رفع نمی‌کند؛ بنابراین گزینهٔ پیش‌فرض نیست.",
+    "",
+    "کلیدهای فعلی env (مقادیر ماسک‌شده):",
+    keyLines,
+    "",
+    "الف) پیشنهادی — بازیابی دستی: کلید مشکوک و مقدار قبلی‌اش را وارد کنید تا با set_env (پس از تأیید strict) اعمال شود.",
+    "ب) ری‌استارت با هشدار صریح: احتمالاً مشکل env را رفع نمی‌کند و فقط سرویس را دوباره راه می‌اندازد.",
+    "ج) هیچ کاری نکن و فقط گزارش بده.",
+    "",
+    `اثر: ${impact}`,
+  ].join("\n");
+
+  return {
+    text,
+    structured: {
+      ok: false,
+      code: "ENV_BASELINE_MISSING",
+      action: "env_recovery_options",
+      app,
+      risk: "medium",
+      summaryFa,
+      impact,
+      choices: ENV_RECOVERY_CHOICES,
+      maskedEnv: masked,
+      currentEnvKeys: masked.map((row) => row.key),
+      approval: { mode: "choose-one", requiredForAnyWrite: true },
+    },
+  };
+}
+
+export async function buildEnvRecoveryCardFromApi(
+  app: string,
+  reasonFa?: string,
+): Promise<EnvRecoveryCard> {
+  const current = await getProjectEnvs(app);
+  return buildEnvRecoveryCard(app, current, reasonFa);
+}
+
+/* ─────────────────────────── کمکی‌ها ─────────────────────────── */
 
 async function findPlan(planID: string) {
   const { data } = await liaraGet<unknown>(EP.me);
@@ -345,15 +437,72 @@ registerAction({
 
 /* ─────────────────────────── عملیات: rollback آخرین تغییر env ─────────────────────────── */
 
+const recoveryCardFor = async (app: string, reasonFa: string) => {
+  try {
+    return await buildEnvRecoveryCardFromApi(app, reasonFa);
+  } catch {
+    return null;
+  }
+};
+
 registerAction({
   kind: "rollback_last_env_change",
-  risk: "low",
+  risk: "medium",
   impact:
-    "برگرداندن فقط آخرین تغییر env قبل از رخداد — سرویس ری‌استارت می‌شود و قطعی کوتاه دارد",
+    "برگرداندن فقط کلیدهای تغییرکردهٔ env به مقدار baseline/تاریخچه — سرویس ری‌استارت می‌شود و قطعی کوتاه دارد",
   appScoped: true,
+  preflight: async (p) => {
+    const app = String(p["app"] ?? "");
+    const incidentAt = String(p["incidentAt"] ?? new Date().toISOString());
+    try {
+      const windowRaw = Number(p["windowSec"] ?? ENV_CHANGE_WINDOW_SEC);
+      const found = await findLatestEnvChange(app, incidentAt, {
+        windowSec: Number.isFinite(windowRaw) ? windowRaw : ENV_CHANGE_WINDOW_SEC,
+        includeBaseline: true,
+      });
+      if (!found || !found.revertable || !found.changes.length) {
+        const reason = found
+          ? `تغییر env در ${faTime(found.at)} دیده شد (منبع: ${found.source})، اما مقدار قبلی آن برای rollback دقیق در دسترس نیست.`
+          : "تغییر env قابل‌بازگشتی قبل از رخداد پیدا نشد و baseline سالم هم برای این اپ در دسترس نیست.";
+        const card = await recoveryCardFor(app, reason);
+        if (card) {
+          return { ok: false, result: { text: card.text, structured: card.structured } };
+        }
+        return {
+          ok: false,
+          result: {
+            text: `ℹ️ ${reason}\nبرای جلوگیری از تغییر کورکورانه، rollback انجام نشد.`,
+            structured: {
+              ok: false,
+              action: "env_recovery_options",
+              // کارت ۳ گزینه‌ای است و نوشتنی انجام نمی‌دهد؛ watch باید آن را
+              // not-required ثبت کند، نه error.
+              code: "ENV_BASELINE_MISSING",
+              source: found?.source,
+            },
+          },
+        };
+      }
+      // کلیدهای تأییدشده در کارت strict قفل می‌شوند؛ اگر تا زمان اجرا
+      // عوض شوند، run دوباره بررسی و متوقف می‌شود.
+      return { ok: true, params: { ...p, expectedKeys: found.keys } };
+    } catch (err) {
+      return {
+        ok: false,
+        result: {
+          text: `⚠️ بررسی منبع rollback ناموفق بود؛ هیچ تغییری اعمال نشد: ${(err as Error).message}`,
+          structured: { ok: false, code: "ENV_PREFLIGHT_FAILED" },
+        },
+      };
+    }
+  },
   describe: (p) => {
     const at = p["incidentAt"] ? `قبل از ${faTime(String(p["incidentAt"]))}` : "در ۱۰ دقیقهٔ اخیر";
-    return `برگرداندن آخرین تغییر env اپ «${String(p["app"] ?? "")}» ${at} (فقط کلیدهای همان تغییر).`;
+    const expected = Array.isArray(p["expectedKeys"])
+      ? (p["expectedKeys"] as unknown[]).map(String).filter(Boolean)
+      : [];
+    const keys = expected.length ? ` — کلیدهای تغییرکرده: ${expected.join("، ")}` : "";
+    return `برگرداندن آخرین تغییر env اپ «${String(p["app"] ?? "")}» ${at} (فقط کلیدهای همان تغییر)${keys}.`;
   },
   choices: () => SIMPLE_CHOICES,
   run: async (p) => {
@@ -361,47 +510,47 @@ registerAction({
     const incidentAt = String(p["incidentAt"] ?? new Date().toISOString());
     if (!Number.isFinite(Date.parse(incidentAt))) {
       return {
-        text: "⚠️ زمان شروع رخداد نامعتبر است؛ rollback انجام نشد. پیشنهاد: restart سرویس.",
+        text: "⚠️ زمان شروع رخداد نامعتبر است؛ rollback انجام نشد.",
         structured: {
           ok: false,
-          action: "restart",
+          action: "env_recovery_options",
           code: "INVALID_INCIDENT_AT",
-          fallback: "restart",
         },
       };
     }
     const windowSec = Number(p["windowSec"] ?? ENV_CHANGE_WINDOW_SEC);
     const found = await findLatestEnvChange(app, incidentAt, {
       windowSec: Number.isFinite(windowSec) ? windowSec : ENV_CHANGE_WINDOW_SEC,
+      includeBaseline: true,
     });
 
     if (!found) {
+      const reason =
+        "تغییر env قابل‌بازگشتی قبل از رخداد پیدا نشد و baseline سالم هم برای این اپ در دسترس نیست.";
+      const card = await recoveryCardFor(app, reason);
       return {
-        text: [
-          "ℹ️ تغییر env اخیری قبل از رخداد پیدا نشد؛ rollback امنی وجود ندارد.",
-          "➡️ پیشنهاد: restart سرویس (کم‌خطر و قابل انجام).",
-        ].join("\n"),
-        structured: {
+        text: card
+          ? card.text
+          : `ℹ️ ${reason}\nبرای جلوگیری از تغییر کورکورانه، rollback انجام نشد.`,
+        structured: card?.structured ?? {
           ok: false,
-          action: "restart",
+          action: "env_recovery_options",
           code: "NO_RECENT_ENV_CHANGE",
-          fallback: "restart",
         },
       };
     }
 
     if (!found.revertable || !found.changes.length) {
+      const reason = `تغییر env در ${faTime(found.at)} دیده شد (منبع: ${found.source})، اما مقدار قبلی آن در تاریخچهٔ محلی یا baseline ثبت نشده است.`;
+      const card = await recoveryCardFor(app, reason);
       return {
-        text: [
-          `ℹ️ تغییر env در ${faTime(found.at)} دیده شد (منبع: ${found.source})، اما مقدار قبلی آن در تاریخچهٔ محلی ثبت نشده است.`,
-          "برای جلوگیری از تغییر کورکورانه، rollback انجام نشد.",
-          "➡️ پیشنهاد: restart سرویس.",
-        ].join("\n"),
-        structured: {
+        text: card
+          ? card.text
+          : `ℹ️ ${reason}\nبرای جلوگیری از تغییر کورکورانه، rollback انجام نشد.`,
+        structured: card?.structured ?? {
           ok: false,
-          action: "restart",
+          action: "env_recovery_options",
           code: "ENV_HISTORY_WITHOUT_VALUES",
-          fallback: "restart",
           source: found.source,
           changeAt: found.at,
           keys: found.keys,
@@ -409,19 +558,39 @@ registerAction({
       };
     }
 
+    const expectedRaw = p["expectedKeys"];
+    if (Array.isArray(expectedRaw)) {
+      const expected = expectedRaw.map(String).sort();
+      const actual = [...found.keys].sort();
+      if (expected.length && expected.join("\u0000") !== actual.join("\u0000")) {
+        const reason =
+          "کلیدهای تغییرکرده از زمان ساخت کارت تأیید عوض شده‌اند؛ برای جلوگیری از بازنویسی تغییر جدیدتر، rollback انجام نشد.";
+        const card = await recoveryCardFor(app, reason);
+        return {
+          text: card ? card.text : `⚠️ ${reason}`,
+          structured: card?.structured ?? {
+            ok: false,
+            action: "env_recovery_options",
+            code: "ENV_CHANGED_SINCE",
+            changeAt: found.at,
+            keys: [...found.keys, ...expected],
+          },
+        };
+      }
+    }
+
     const current = await getProjectEnvs(app);
     const plan = planEnvRollback(current, found);
     if (plan.mismatches.length) {
+      const reason =
+        "از زمان ثبت آن تغییر، مقدار env دوباره عوض شده است؛ برای جلوگیری از بازنویسی تغییر جدیدتر، rollback انجام نشد.";
+      const card = await recoveryCardFor(app, reason);
       return {
-        text: [
-          "⚠️ از زمان ثبت آن تغییر، مقدار env دوباره عوض شده است؛ برای جلوگیری از بازنویسی تغییر جدیدتر، rollback انجام نشد.",
-          "➡️ پیشنهاد: restart سرویس.",
-        ].join("\n"),
-        structured: {
+        text: card ? card.text : `⚠️ ${reason}`,
+        structured: card?.structured ?? {
           ok: false,
-          action: "restart",
+          action: "env_recovery_options",
           code: "ENV_CHANGED_SINCE",
-          fallback: "restart",
           changeAt: found.at,
           keys: plan.mismatches,
         },
@@ -430,13 +599,21 @@ registerAction({
 
     const applied = await applyEnvChange(app, plan.vars, plan.unset, { kind: "rollback" });
     const diff = envDiffText(applied.changes);
+    const summary = found.diff ?? envDiffSummary(found.changes);
+    const sourceLabel = found.source === "baseline" ? "baseline سالم" : found.source;
 
     return {
       text: [
-        "✅ آخرین تغییر env قبل از رخداد برگردانده شد.",
-        `🕒 زمان تغییر: ${faTime(found.at)} — منبع: ${found.source}`,
+        found.source === "baseline"
+          ? "✅ env اپ به snapshot سالم قبل از تغییر برگردانده شد."
+          : "✅ آخرین تغییر env قبل از رخداد برگردانده شد.",
+        `🕒 زمان تغییر: ${faTime(found.at)} — منبع: ${sourceLabel}`,
+        ...(found.baselineAt ? [`🧪 baseline سالم: ${faTime(found.baselineAt)}`] : []),
         `📋 کلیدهای بازگردانده‌شده: ${found.changes.map((change) => change.key).join("، ")}`,
-        `🔄 سرویس ری‌استارت می‌شود.`,
+        `➕ اضافه‌شده (حذف می‌شود): ${summary.added.join("، ") || "—"}`,
+        `➖ حذف‌شده (برمی‌گردد): ${summary.removed.join("، ") || "—"}`,
+        `✏️ تغییرکرده (برمی‌گردد): ${summary.changed.join("، ") || "—"}`,
+        "🔄 سرویس ری‌استارت می‌شود.",
         `📋 تغییرات:\n${diff || "—"}`,
         ...(applied.historyRecorded ? [] : ["⚠️ تاریخچهٔ محلی rollback ثبت نشد."]),
       ].join("\n"),
@@ -447,7 +624,9 @@ registerAction({
         changeId: found.id,
         changeAt: found.at,
         source: found.source,
+        ...(found.baselineAt ? { baselineAt: found.baselineAt } : {}),
         keys: found.changes.map((change) => change.key),
+        diff: summary,
         changedKeys: applied.changes.map((change) => change.key),
         historyRecorded: applied.historyRecorded,
         historyId: applied.historyId,
@@ -636,6 +815,33 @@ export async function runGuardedAction(
     return { res: result(notAllowed, { ok: false, code: "APP_NOT_ALLOWLISTED" }), executed: false };
   }
 
+  /*
+   * preflight فقط‌خواندنی: پیش از ساخت کارت تأیید، منبع امن را بررسی و
+   * پارامترهای نمایشی (مثل expectedKeys) را غنی می‌کند. اگر عملیات منبع
+   * امنی ندارد، همان‌جا کارت راهنما برمی‌گردد و هیچ تأییدی ساخته نمی‌شود.
+   */
+  if (spec.preflight) {
+    let pre: Awaited<ReturnType<NonNullable<ActionSpec["preflight"]>>>;
+    try {
+      pre = await spec.preflight(params);
+    } catch (err) {
+      return {
+        res: result(`⚠️ بررسی پیش‌نیاز عملیات ناموفق بود؛ هیچ تغییری اعمال نشد: ${(err as Error).message}`, {
+          ok: false,
+          code: "PREFLIGHT_FAILED",
+        }),
+        executed: false,
+      };
+    }
+    if (pre && pre.ok === false) {
+      return {
+        res: result(pre.result.text, pre.result.structured),
+        executed: false,
+      };
+    }
+    if (pre && pre.ok === true) params = pre.params;
+  }
+
   if (kind === 'liara_create_app') params = { ...params, quote: await quoteCreate(params) };
   const summaryFa = spec.describe(params);
   const decision = decideApproval({ tool: kind, params, declaredRisk: spec.risk });
@@ -783,7 +989,7 @@ export function registerWriteTools(server: McpServer): void {
     {
       title: "برگرداندن آخرین تغییر env",
       description:
-        "آخرین تغییر متغیرهای محیطی قبل از رخداد را از تاریخچهٔ محلی env پیدا می‌کند و فقط همان کلیدها را به مقدار قبلی برمی‌گرداند (نیازمند تأیید؛ risk=low). اگر تغییر اخیر یا مقدار قبلی در دسترس نباشد، اجرا نمی‌شود و restart پیشنهاد می‌شود.",
+        "آخرین تغییر متغیرهای محیطی قبل از رخداد را از تاریخچهٔ محلی یا snapshot سالم env پیدا می‌کند و فقط کلیدهای تغییرکرده را به مقدار قبلی برمی‌گرداند (نیازمند تأیید؛ risk=medium). اگر baseline/مقدار قبلی در دسترس نباشد، اجرا نمی‌شود و کارت ۳ گزینه‌ای بازیابی دستی env نمایش داده می‌شود؛ ری‌استارت پیشنهاد نمی‌شود.",
       inputSchema: {
         app: z.string().min(1).describe("نام اپ در لیارا"),
         incidentAt: z

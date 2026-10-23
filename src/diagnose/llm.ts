@@ -39,6 +39,14 @@ export const RESTART_REMEDY: RemedyOption = {
   id: "restart",
   labelFa: "ری‌استارت سرویس (کم‌خطر و سریع)",
 };
+/**
+ * وقتی تغییر env دیده شده اما baseline/تاریخچهٔ مقدار قبلی وجود ندارد.
+ * این راهکار به‌جای restart پیشنهاد می‌شود تا کاربر مقدار قبلی را دستی وارد کند.
+ */
+export const MANUAL_ENV_REMEDY: RemedyOption = {
+  id: "set_env",
+  labelFa: "بازیابی دستی env: ورود کلید مشکوک و مقدار قبلی (کارت ۳ گزینه‌ای)",
+};
 
 export interface LlmRankResult {
   hypotheses: Hypothesis[];

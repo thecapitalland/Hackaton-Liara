@@ -20,6 +20,10 @@ import {
 import { filterEventsToWindow } from "../src/diagnose/window.js";
 import type { EnvChangeCandidate } from "../src/env-history.js";
 import { runDiagnosis } from "../src/tools/composite.js";
+import {
+  buildEnvRecoveryCard,
+  ENV_RECOVERY_CHOICES,
+} from "../src/tools/write.js";
 import type { Evidence, Hypothesis, ProbeResult } from "../src/types.js";
 
 const app = "agate-liara";
@@ -222,6 +226,62 @@ test("با تغییر env دقیق در پنجره، rollback_last_env_change ا
   } finally {
     rmSync(stateDir, { recursive: true, force: true });
   }
+});
+
+test("بدون baseline و با تغییر env، به‌جای restart بازیابی دستی env انتخاب می‌شود", async () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "agate-diagnosis-manual-env-"));
+  try {
+    const envChange: EnvChangeCandidate = {
+      id: "release_test",
+      at: new Date(Date.now() - 60_000).toISOString(),
+      app,
+      source: "release",
+      revertable: false,
+      changes: [],
+      keys: [],
+      releaseId: "rel_test",
+      releaseType: "ENV_UPDATE",
+    };
+    const run = await runDiagnosis(app, "HTTP 500", {
+      probe: probe500(),
+      logs: [],
+      events: [],
+      cpu: null,
+      memory: null,
+      plan: null,
+      envChange,
+      stateDir,
+      llm: false,
+    });
+
+    assert.equal(run.rollbackAvailable, false);
+    assert.equal(run.selectedRemedy, "set_env");
+    assert.equal(run.remedySource, "rules");
+    assert.match(run.text, /کارت ۳ گزینه‌ای بازیابی دستی env/);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("کارت بازیابی بدون baseline سه گزینه دارد، گزینهٔ اول پیشنهادی است و مقدارها ماسک می‌شوند", () => {
+  const card = buildEnvRecoveryCard(app, [
+    { key: "BUG_MODE", value: "test-only-secret" },
+    { key: "PORT", value: "3000" },
+  ]);
+  assert.equal(ENV_RECOVERY_CHOICES.length, 3);
+  assert.equal(ENV_RECOVERY_CHOICES[0]?.recommended, true);
+  assert.equal(ENV_RECOVERY_CHOICES[1]?.value, "restart_with_warning");
+  assert.equal(ENV_RECOVERY_CHOICES[2]?.value, "report_only");
+  assert.deepEqual(card.structured["currentEnvKeys"], ["BUG_MODE", "PORT"]);
+  assert.deepEqual(card.structured["maskedEnv"], [
+    { key: "BUG_MODE", value: "••••" },
+    { key: "PORT", value: "••••" },
+  ]);
+  assert.doesNotMatch(card.text, /test-only-secret/);
+  assert.match(card.text, /BUG_MODE=••••/);
+  assert.match(card.text, /احتمالاً مشکل env را رفع نمی‌کند/);
+  assert.equal(card.structured["risk"], "medium");
+  assert.equal(card.structured["code"], "ENV_BASELINE_MISSING");
 });
 
 test("LLM فهرست راهکارهای مجاز را می‌بیند و می‌تواند rollback را انتخاب کند", async () => {

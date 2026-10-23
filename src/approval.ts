@@ -104,7 +104,7 @@ export function hashParams(tool: string, app: string | undefined, params: Record
 
 /**
  * ریسک مؤثر یک اقدام. عملیات هزینه‌دار/پرخطر همیشه high هستند.
- * rollback_last_env_change خودش risk=low اعلام می‌کند و به سیاست عادی
+ * rollback_last_env_change خودش risk=medium اعلام می‌کند و به سیاست عادی
  * low/medium/high سپرده می‌شود؛ هیچ استثنای مخفی برای BUG_MODE وجود ندارد.
  */
 export function effectiveRisk(
@@ -160,7 +160,7 @@ export function decideApproval(input: {
       requiresApproval: true,
       automatic: false,
       reasonFa:
-        "سیاست balanced: اقدام medium/high یا تغییر env عمومی نیازمند تأیید است؛ rollback_last_env_change و restart کم‌خطرند.",
+        "سیاست balanced: اقدام medium/high یا تغییر env نیازمند تأیید است؛ rollback_last_env_change اکنون medium است و restart کم‌خطر می‌ماند.",
     };
   }
 

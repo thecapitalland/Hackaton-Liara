@@ -58,20 +58,20 @@ test("balanced: low خودکار، medium تأیید، high تأیید", () => {
   assert.equal(high.requiresApproval, true);
 });
 
-test("rollback_last_env_change کم‌خطر و در balanced خودکار است؛ liara_set_env همچنان medium است", () => {
+test("rollback_last_env_change ریسک medium دارد و در balanced تأیید می‌خواهد؛ liara_set_env هم medium است", () => {
   const rollbackParams = { app, incidentAt: "2026-10-23T12:00:00.000Z" };
-  assert.equal(effectiveRisk("rollback_last_env_change", rollbackParams, "low"), "low");
+  assert.equal(effectiveRisk("rollback_last_env_change", rollbackParams, "medium"), "medium");
 
   const rollback = decideApproval({
     tool: "rollback_last_env_change",
     params: rollbackParams,
-    declaredRisk: "low",
+    declaredRisk: "medium",
     policy: "balanced",
   });
-  assert.equal(rollback.risk, "low");
-  assert.equal(rollback.requiresApproval, false);
-  assert.equal(rollback.automatic, true);
-  assert.match(rollback.autoNoticeFa ?? "", /اجرای خودکار طبق سیاست balanced/);
+  assert.equal(rollback.risk, "medium");
+  assert.equal(rollback.requiresApproval, true);
+  assert.equal(rollback.automatic, false);
+  assert.match(rollback.reasonFa, /medium\/high/);
 
   const setEnv = decideApproval({
     tool: "liara_set_env",
@@ -132,7 +132,7 @@ test("ریسک اعلام‌شدهٔ عملیات‌های هزینه‌دار h
     assert.equal(getAction(kind)?.risk, "high", kind);
   }
   assert.equal(getAction("liara_restart")?.risk, "low");
-  assert.equal(getAction("rollback_last_env_change")?.risk, "low");
+  assert.equal(getAction("rollback_last_env_change")?.risk, "medium");
   assert.equal(getAction("liara_set_env")?.risk, "medium");
 });
 
