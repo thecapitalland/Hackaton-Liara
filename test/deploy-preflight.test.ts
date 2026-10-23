@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { listApprovals, setElicitor } from "../src/approval.js";
-import { PACKAGE_ROOT } from "../src/config.js";
+import { getApproval, listApprovals, setElicitor } from "../src/approval.js";
+import { PACKAGE_ROOT, registerOwnedApp } from "../src/config.js";
 import { explainDeployFailure } from "../src/diagnose/deploy-failure.js";
 import { logsV2Query, metricsSince } from "../src/liara/queries.js";
 import { connectionDigest, readPreflightGate } from "../src/liara/preflight-gate.js";
@@ -187,5 +187,84 @@ test("deploy_project با preflight ردشده به تشخیص می‌رسد و 
     assert.equal(calls, 0);
   } finally {
     globalThis.fetch = original;
+  }
+});
+
+test("اپ موجود کارت env با وضعیت کلید و کارت انتشار بدون دیسک غایب می‌سازد", async () => {
+  const state = mkdtempSync(path.join(tmpdir(), "agate-wallex-continue-"));
+  const project = mkdtempSync(path.join(tmpdir(), "agate-wallex-src-"));
+  const previous = process.env.AGATE_STATE_DIR;
+  process.env.AGATE_STATE_DIR = state;
+  writeFileSync(
+    path.join(state, "preflight-gate.json"),
+    JSON.stringify({ connection: connectionDigest(), ready: true, ranAt: new Date().toISOString() }),
+  );
+  writeFileSync(path.join(project, "liara.json"), JSON.stringify({
+    platform: "docker",
+    port: 8000,
+    disks: [{ name: "data", mountTo: "/app/data" }],
+  }));
+  writeFileSync(path.join(project, "app.py"), 'import os\nos.getenv("API_TOKEN")\n');
+  writeFileSync(path.join(project, ".env.example"), "API_TOKEN=super-secret-value\n");
+  writeFileSync(path.join(project, ".env"), "MODE=mode-fixture\nEMPTY_KEY=\nPORT=3000\nBOX_ONLY=set-fixture\n");
+  registerOwnedApp("sample-bot");
+  setElicitor(null);
+  const original = globalThis.fetch;
+  const methods: string[] = [];
+  const paths: string[] = [];
+  globalThis.fetch = async (url, init) => {
+    methods.push(init?.method ?? "GET");
+    const pathname = new URL(String(url)).pathname;
+    paths.push(pathname);
+    if (pathname === "/v1/projects/sample-bot/disks") {
+      return new Response(JSON.stringify({ error: "Internal Server Error" }), { status: 500 });
+    }
+    if (pathname === "/v1/projects/sample-bot") {
+      return new Response(JSON.stringify({ project: { _id: "pid123", project_id: "sample-bot" } }), { status: 200 });
+    }
+    if (pathname === "/v1/projects/pid123/disks") {
+      return new Response(JSON.stringify({ disks: [], mounts: [] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({}), { status: 404 });
+  };
+  try {
+    const res = await runDeployProject(
+      { projectPath: project, app: "sample-bot" },
+      { stateDir: state, useModel: false },
+    );
+    const text = res.content?.find((item) => item.type === "text")?.text ?? "";
+    assert.equal(res.structuredContent?.["code"], "APPROVAL_REQUIRED");
+    assert.match(text, /MODE — تنظیم‌شده/);
+    assert.match(text, /EMPTY_KEY — خالی/);
+    assert.match(text, /API_TOKEN — خالی/);
+    assert.match(text, /BOX_ONLY — تنظیم‌شده/);
+    assert.equal(text.includes("mode-fixture"), false);
+    assert.equal(text.includes("set-fixture"), false);
+    assert.equal(text.includes("super-secret-value"), false);
+    assert.equal(text.includes("PORT —"), false);
+    assert.match(text, /data → \/app\/data/);
+    assert.equal(paths.includes("/v1/projects/sample-bot/disks"), false);
+    assert.ok(paths.includes("/v1/projects/pid123/disks"));
+    assert.ok(methods.every((method) => method === "GET"));
+    const ids = [...text.matchAll(/شناسهٔ تأیید: ([0-9a-f-]{36})/g)].map((match) => match[1] ?? "");
+    assert.equal(ids.length, 2);
+    const cards = ids.map((id) => getApproval(id));
+    const envCard = cards.find((card) => card?.tool === "liara_set_env");
+    const deployCard = cards.find((card) => card?.tool === "liara_deploy");
+    const variables = (envCard?.params["variables"] ?? []) as { key: string; value: string }[];
+    assert.equal(variables.find((row) => row.key === "MODE")?.value, "mode-fixture");
+    assert.equal(variables.some((row) => row.key === "EMPTY_KEY"), false);
+    assert.equal(envCard?.params["awaitingValues"], undefined);
+    assert.deepEqual(deployCard?.params["releaseDisks"], []);
+    const omitted = deployCard?.params["disksOmitted"] as { name: string }[];
+    assert.equal(omitted[0]?.name, "data");
+    assert.equal(listApprovals().filter((item) => item.app === "sample-bot").length, 2);
+  } finally {
+    globalThis.fetch = original;
+    setElicitor(null);
+    if (previous === undefined) delete process.env.AGATE_STATE_DIR;
+    else process.env.AGATE_STATE_DIR = previous;
+    rmSync(state, { recursive: true, force: true });
+    rmSync(project, { recursive: true, force: true });
   }
 });

@@ -14,7 +14,7 @@ Auth: `Authorization: Bearer <LIARA_API_TOKEN>`; append `teamID=<id>` when confi
 | GET | `/v1/me` | Account + `plans.projects`, `plans.projectBundlePlans` (CLI reference; no separate plans endpoint) |
 | GET | `/v1/networks` | CLI `base.js:186`. Preflight reads this list. Create still sends `network._id` |
 | POST | `/v2/projects/{name}/sources` | multipart `file` tar.gz, ≤256 MiB; `{sourceID}` |
-| POST | `/v2/projects/{name}/releases` | `{sourceID,port,type,build,...}` و، وقتی `liara.json` دیسک دارد، `disks:[{name,mountTo}]` از `@liara/cli@9.6.0` `deploy.js:264`; `{releaseID}` |
+| POST | `/v2/projects/{name}/releases` | `{sourceID,port,type,build,...}`. `disks:[{name,mountTo}]` فقط برای دیسکی که روی اپ هست یا `size` دارد. دیسک غایب بدون size فرستاده نمی‌شود؛ `deploy.js:264` آن را می‌فرستد و پاسخ `disk_not_found` است. `{releaseID}` |
 | GET | `/v1/releases/{releaseID}` | Release polling (CLI reference) |
 | GET | `/v2/releases/{releaseID}/build-logs?since=<ts>` | Build logs (CLI reference) |
 | POST | `/v2/releases/{releaseID}/cancel` | Cancel (reference only, not exposed as tool) |

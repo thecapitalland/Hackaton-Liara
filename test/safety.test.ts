@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createServer } from '../src/index.js';
-import { PACKAGE_ROOT } from '../src/config.js';
 import { setElicitor } from '../src/approval.js';
 import { runGuardedAction } from '../src/tools/write.js';
 import { liaraPost } from '../src/liara/client.js';
@@ -55,8 +55,11 @@ test('مقصد و مسیر ناامن پروب رد می‌شود', async () => 
 test('deploy_project روی اپ موجود هم تأیید جداگانه می‌گیرد', async () => {
   const token = process.env.LIARA_API_TOKEN;
   const state = process.env.AGATE_STATE_DIR;
+  const stateDir = path.join(tmpdir(), `agate-safety-${Date.now()}`);
+  const project = mkdtempSync(path.join(tmpdir(), 'agate-safety-project-'));
+  writeFileSync(path.join(project, 'package.json'), JSON.stringify({ name: 'sample' }));
   process.env.LIARA_API_TOKEN = 'test-only-token-not-live';
-  process.env.AGATE_STATE_DIR = path.join(tmpdir(), `agate-safety-${Date.now()}`);
+  process.env.AGATE_STATE_DIR = stateDir;
   const original = globalThis.fetch;
   const methods: string[] = [];
   globalThis.fetch = async (_url, init) => { methods.push(init?.method ?? 'GET'); return new Response(JSON.stringify({project:{envs:[]}}),{status:200}); };
@@ -65,13 +68,17 @@ test('deploy_project روی اپ موجود هم تأیید جداگانه می�
   const [ct,st] = InMemoryTransport.createLinkedPair();
   try {
     await Promise.all([server.connect(st),client.connect(ct)]);
-    const res = await client.callTool({name:'deploy_project',arguments:{projectPath:PACKAGE_ROOT,app:'agate-liara'}});
+    const res = await client.callTool({name:'deploy_project',arguments:{projectPath:project,app:'agate-liara'}});
     assert.equal((res.structuredContent as any)?.code,'APPROVAL_REQUIRED');
     assert.ok(methods.every(m => m === 'GET'));
+    const text = res.content?.find((item) => item.type === 'text')?.text ?? '';
+    assert.equal(text.includes('test-only-token-not-live'), false);
   } finally {
     globalThis.fetch = original;
     if (token === undefined) delete process.env.LIARA_API_TOKEN; else process.env.LIARA_API_TOKEN=token;
     if (state === undefined) delete process.env.AGATE_STATE_DIR; else process.env.AGATE_STATE_DIR=state;
+    rmSync(stateDir, { recursive: true, force: true });
+    rmSync(project, { recursive: true, force: true });
     await client.close(); await server.close();
   }
 });

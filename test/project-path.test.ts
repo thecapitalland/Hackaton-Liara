@@ -61,7 +61,7 @@ test("os.environ.get در کارت env فقط نام کلید را می‌آور
     writeFileSync(path.join(dir, ".env.example"), "API_TOKEN=super-secret-value\n");
     assert.deepEqual(scanEnvUsage([path.join(dir, "app.py")]), ["API_TOKEN"]);
     const card = envCardAfterCreate("sample-app", dir);
-    assert.match(card, /API_TOKEN/);
+    assert.match(card, /API_TOKEN — خالی/);
     assert.equal(card.includes("super-secret-value"), false);
   } finally {
     if (previous === undefined) delete process.env["AGATE_STATE_DIR"];

@@ -187,25 +187,32 @@ test("detector استنتاجی observed نمی‌شود", async () => {
 
 test("متن آرایه‌ای JSON و مدل جایگزین خالی خوانده می‌شود", async () => {
   const seen: string[] = [];
-  const result = await decideIncident({
-    decisionModel: "typesafe/jev-1.14",
-    primaryModel: "deepseek-v4.1-flash",
-    fallbackModel: "",
-    summary,
-    remedies: [RESTART_REMEDY],
-    evidenceIds: ["ev_1"],
-    logs: [{ ts: null, level: "error", message: "status 500" }],
-    probe: { url: "https://agate-liara.liara.run/", samples: [{ status: 500, latencyMs: 10 }], ok: false, p50: 10 },
-    callJev: async () => { throw new Error("down"); },
-    callModel: async (model) => {
-      seen.push(model);
-      if (model !== "gpt-4.1-mini") return { choices: [{ message: { content: [{ type: "text", text: "نه" }] } }] };
-      return { choices: [{ message: { content: [{ type: "text", text: JSON.stringify({ hypotheses: [{ id: "http_5xx", confidence: 0.7 }], remedy: "restart" }) }] } }] };
-    },
-  });
-  assert.deepEqual(seen, ["deepseek-v4.1-flash", "deepseek-v4.1-flash", "gpt-4.1-mini"]);
-  assert.equal(result.layer, "fallback");
-  assert.equal(result.hypotheses[0]?.id, "http_5xx");
+  const previousFallback = process.env.LLM_MODEL_FALLBACK;
+  delete process.env.LLM_MODEL_FALLBACK;
+  try {
+    const result = await decideIncident({
+      decisionModel: "typesafe/jev-1.14",
+      primaryModel: "deepseek-v4.1-flash",
+      fallbackModel: "",
+      summary,
+      remedies: [RESTART_REMEDY],
+      evidenceIds: ["ev_1"],
+      logs: [{ ts: null, level: "error", message: "status 500" }],
+      probe: { url: "https://agate-liara.liara.run/", samples: [{ status: 500, latencyMs: 10 }], ok: false, p50: 10 },
+      callJev: async () => { throw new Error("down"); },
+      callModel: async (model) => {
+        seen.push(model);
+        if (model !== "gpt-4.1-mini") return { choices: [{ message: { content: [{ type: "text", text: "نه" }] } }] };
+        return { choices: [{ message: { content: [{ type: "text", text: JSON.stringify({ hypotheses: [{ id: "http_5xx", confidence: 0.7 }], remedy: "restart" }) }] } }] };
+      },
+    });
+    assert.deepEqual(seen, ["deepseek-v4.1-flash", "deepseek-v4.1-flash", "gpt-4.1-mini"]);
+    assert.equal(result.layer, "fallback");
+    assert.equal(result.hypotheses[0]?.id, "http_5xx");
+  } finally {
+    if (previousFallback === undefined) delete process.env.LLM_MODEL_FALLBACK;
+    else process.env.LLM_MODEL_FALLBACK = previousFallback;
+  }
 });
 
 test("شواهد leak با متریک خالی و kill، crash_loop را رد و memory_leak را نگه می‌دارد", async () => {

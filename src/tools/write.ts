@@ -34,13 +34,13 @@ import { quoteCreate, assertQuoteUnchanged, quoteDisk, assertDiskQuoteUnchanged,
 import { createAppBody } from '../liara/create-app.js';
 import { applyChosenPlan, describeCreatePlan, readPlanErrorCode, explainPlanError, type PlanChoiceItem } from '../liara/plan-choice.js';
 import { replacementForCreateResult } from '../liara/plan-followup.js';
-import { detectStack } from "../deploy/detect.js";
+import { detectStack, envRowsForCard } from "../deploy/detect.js";
 import {
   fetchProjectDisks,
   formatDiskCard,
-  missingDiskSizeCard,
   parseRemoteDisks,
   planDiskMounts,
+  releasableDisks,
   type DiskCreateSpec,
   type DiskLine,
   type ReleaseDisk,
@@ -271,35 +271,51 @@ function requireAllowedApp(app: string | undefined): string | null {
   return null;
 }
 
-/** بعد از ساخت اپ، فقط نام کلیدها را روی کارت set_env می‌گذارد. مقدار چاپ نمی‌شود. */
+/** وضعیت نمایش کلید. مقدار هرگز در این متن نیست. */
+export function envPresenceLabel(value: string): "تنظیم‌شده" | "خالی" {
+  return value.trim() ? "تنظیم‌شده" : "خالی";
+}
+
+/**
+ * کارت env از `.env` همان projectPath.
+ * متن کارت فقط «تنظیم‌شده» یا «خالی» است. مقدار غیرخالی فقط داخل پارامتر کارت می‌ماند
+ * تا اجرای بعدی بتواند بنویسد، و کلید خالی POST نمی‌شود.
+ */
 export function envCardAfterCreate(app: string, projectPath: unknown): string {
   if (typeof projectPath !== "string" || !projectPath.trim()) return "";
-  let keys: string[] = [];
+  let rows: { key: string; value: string }[] = [];
   try {
-    keys = detectStack(resolveProjectPath(projectPath), app).requiredEnv;
+    const folder = resolveProjectPath(projectPath);
+    rows = envRowsForCard(folder, detectStack(folder, app).requiredEnv);
   } catch {
     return "";
   }
-  if (!keys.length) return "";
+  if (!rows.length) return "";
+  const variables = rows
+    .filter((row) => row.value.trim())
+    .map((row) => ({ key: row.key, value: row.value }));
+  const awaitingValues = variables.length === 0;
+  const emptyCount = rows.length - variables.length;
   const record = createPendingApproval({
     tool: "liara_set_env",
     app,
     params: {
       app,
-      variables: keys.map((key) => ({ key, value: "" })),
+      variables,
       unset: [],
-      awaitingValues: true,
+      ...(awaitingValues ? { awaitingValues: true } : {}),
     },
-    summaryFa: `تنظیم env اپ «${app}»؛ کلیدها: ${keys.join("، ")}. مقادیر در این کارت نیستند.`,
+    summaryFa: `تنظیم env اپ «${app}» از فایل .env پروژه. ${variables.length} کلید تنظیم‌شده و ${emptyCount} کلید خالی. مقدارها در متن این کارت نیستند.`,
     risk: "medium",
-    impact: "نوشتن متغیرهای محیطی فقط بعد از اینکه مقدارها را جدا بدهید. این کارت با مقدار خالی اجرا نمی‌شود.",
+    impact: awaitingValues
+      ? "هیچ مقدار غیرخالی در .env نیست. این کارت تا آمدن مقدار اجرا نمی‌شود."
+      : "فقط کلیدهای تنظیم‌شده نوشته می‌شوند. کلید خالی فرستاده نمی‌شود و مقدار در متن کارت نیست.",
     choices: SIMPLE_CHOICES,
   });
   return [
-    "کلیدهای env لازم (مقدار چاپ نمی‌شود):",
-    ...keys.map((key) => `• ${key}`),
+    "کلیدهای env (مقدار چاپ نمی‌شود):",
+    ...rows.map((row) => `• ${row.key} — ${envPresenceLabel(row.value)}`),
     pendingMessage(record),
-    "مقدارها را در liara_set_env بدهید؛ این کارت تا آمدن مقدار اجرا نمی‌شود.",
   ].join("\n");
 }
 
@@ -518,7 +534,11 @@ registerAction({
           )
           .filter(Boolean)
       : [];
-    const extra = [card, ...prices].filter(Boolean).join("\n");
+    const omitted = Array.isArray(p["disksOmitted"]) ? (p["disksOmitted"] as ReleaseDisk[]) : [];
+    const omittedNote = omitted.length
+      ? `این انتشار سورس این mount را ندارد، چون دیسک روی اپ نیست و size در liara.json نیست: ${omitted.map((disk) => `${disk.name} → ${disk.mountTo}`).join("، ")}. deploy.js همان mount را در بدنه می‌گذارد و لیارا disk_not_found برمی‌گرداند. اندازه ساخته نشد و POST ساخت دیسک زده نمی‌شود.`
+      : "";
+    const extra = [card, ...prices, omittedNote].filter(Boolean).join("\n");
     return `انتشار سورس پوشهٔ «${folder}» روی اپ «${String(p["app"] ?? "")}».${extra ? `\n${extra}` : ""}`;
   },
   choices: () => SIMPLE_CHOICES,
@@ -543,10 +563,7 @@ registerAction({
       };
     }
     const plan = planDiskMounts(local, remote);
-    if (plan.blocked.length) {
-      const card = missingDiskSizeCard(plan.blocked);
-      return { ok: false, result: card };
-    }
+    const sending = releasableDisks(plan);
     const diskCreates: (DiskCreateSpec & { quote?: DiskQuote })[] = [];
     for (const create of plan.creates) {
       const quote = await quoteDisk({ name: create.name, size: create.size });
@@ -557,9 +574,10 @@ registerAction({
       ok: true,
       params: {
         ...rest,
-        releaseDisks: plan.releaseDisks,
+        releaseDisks: sending,
         diskCreates,
         diskLines: plan.lines,
+        ...(plan.blocked.length ? { disksOmitted: plan.blocked.map((disk) => ({ ...disk })) } : {}),
       },
     };
   },

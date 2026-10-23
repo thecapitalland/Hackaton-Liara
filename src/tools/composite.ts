@@ -53,6 +53,7 @@ import {
   parseRemoteDisks,
   planDiskMounts,
   releaseDiskField,
+  releasableDisks,
   type DiskCreateSpec,
   type DiskLine,
   type ReleaseDisk,
@@ -66,6 +67,7 @@ import { bullets, faTime, result } from "./common.js";
 import { resolveDeployNetwork } from "../liara/networks.js";
 import {
   buildEnvRecoveryCardFromApi,
+  envCardAfterCreate,
   extractDnsRecords,
   getAction,
   runGuardedAction,
@@ -176,20 +178,21 @@ export function buildReleaseBody(
   detection: StackDetection,
   sourceID: string,
   location: string = process.env.LIARA_BUILD_LOCATION ?? "iran",
+  disks: readonly { name: string; mountTo: string }[] | undefined = undefined,
 ): Record<string, unknown> {
   if (!(BUILD_LOCATIONS as readonly string[]).includes(location)) {
     throw new Error(
       `منطقهٔ بیلد «${location}» معتبر نیست؛ فقط ${BUILD_LOCATIONS.join(" یا ")} مجاز است.`,
     );
   }
-  const disks = releaseDiskField(detection.disks ?? []);
+  const releaseDisks = disks ?? releaseDiskField(detection.disks ?? []);
   return {
     sourceID,
     port: detection.port ?? 3000,
     type: detection.platform,
     message: `Agate-Liara — ${new Date().toISOString()}`,
     // @liara/cli@9.6.0 package/lib/commands/deploy.js:264 و :553-558 — disks: [{name, mountTo}]
-    ...(disks.length ? { disks } : {}),
+    ...(releaseDisks.length ? { disks: releaseDisks } : {}),
     build: {
       cache: true,
       args: {},
@@ -209,7 +212,7 @@ async function prepareAuthorizedDisks(
   app: string,
   local: NonNullable<StackDetection["disks"]>,
   authorized: DeployDiskAuthorization | undefined,
-): Promise<{ stopped?: DeployOutcome; note?: string }> {
+): Promise<{ stopped?: DeployOutcome; note?: string; releaseDisks?: ReleaseDisk[] }> {
   if (!local.length) return {};
   const listed = await fetchProjectDisks(app);
   const remote = parseRemoteDisks(listed.data);
@@ -222,11 +225,13 @@ async function prepareAuthorizedDisks(
     };
   }
   const plan = planDiskMounts(local, remote);
+  const sending = releasableDisks(plan);
+  const notes = [formatDiskCard(plan)];
   if (plan.blocked.length) {
-    const card = missingDiskSizeCard(plan.blocked);
-    return { stopped: { text: card.text, structured: card.structured } };
+    notes.push(missingDiskSizeCard(plan.blocked).text);
+    notes.push("انتشار سورس بدون این mount ادامه دارد. POST ساخت دیسک زده نمی‌شود.");
   }
-  if (!mountsAreAuthorized(plan.releaseDisks, authorized?.releaseDisks)) {
+  if (!mountsAreAuthorized(sending, authorized?.releaseDisks)) {
     return {
       stopped: {
         text: "کارت تأیید همین نام و mountTo را ندارد. release با دیسک ارسال نشد.",
@@ -242,7 +247,7 @@ async function prepareAuthorizedDisks(
       },
     };
   }
-  if (!cardShowsDiskPlan(authorized?.diskLines, plan.releaseDisks, plan.creates)) {
+  if (!cardShowsDiskPlan(authorized?.diskLines, sending, plan.creates)) {
     return {
       stopped: {
         text: "کارت تأیید اندازه و mountTo همین دیسک‌ها را نشان نمی‌دهد. هیچ POSTی ارسال نشد.",
@@ -250,7 +255,6 @@ async function prepareAuthorizedDisks(
       },
     };
   }
-  const notes = [formatDiskCard(plan)];
   for (const create of plan.creates) {
     const approved = authorized?.diskCreates?.find((item) => item.name === create.name);
     try {
@@ -266,7 +270,7 @@ async function prepareAuthorizedDisks(
     await liaraPost(EP.createDisk(app), diskCreateBody(create));
     notes.push(`دیسک «${create.name}» ساخته شد. mount در release: ${create.mountTo}`);
   }
-  return { note: notes.filter(Boolean).join("\n") };
+  return { note: notes.filter(Boolean).join("\n"), releaseDisks: sending };
 }
 
 /**
@@ -309,7 +313,12 @@ export async function deploySourceToApp(
   lines.push(`${fa.deployUpload} (${humanSize(packed.bytes)}) — source: ${sourceID}`);
 
   lines.push(fa.deployRelease);
-  const releaseBody = buildReleaseBody(detection, sourceID);
+  const releaseBody = buildReleaseBody(
+    detection,
+    sourceID,
+    process.env.LIARA_BUILD_LOCATION ?? "iran",
+    prepared.releaseDisks ?? authorized?.releaseDisks,
+  );
   const { data: releaseData } = await liaraPost<Record<string, unknown>>(
     EP.createRelease(app),
     releaseBody,
@@ -1615,14 +1624,17 @@ export async function runDeployProject(
         pendingCard: ensured.note.includes("شناسهٔ تأیید") ? ensured.note : undefined,
       }, deps, code);
     }
+    const envCard = envCardAfterCreate(app, folder);
     const outcome = await runGuardedAction("liara_deploy", { app, path: folder });
     const text = textOf(outcome.res);
     const structured = (outcome.res.structuredContent ?? {}) as Record<string, unknown>;
-    if (structured["ok"] === true || isApprovalPending(text, structured["code"])) return outcome.res;
+    if (structured["ok"] === true || isApprovalPending(text, structured["code"])) {
+      return envCard ? result(`${envCard}\n${text}`, structured) : outcome.res;
+    }
     const releaseId = typeof structured["releaseID"] === "string" ? structured["releaseID"] : undefined;
     const stage = deployStopStage(structured);
     const read = stage === "build" && releaseId ? await readBuildEvidence(releaseId) : {};
-    return explainAndReturn({
+    const explained = await explainAndReturn({
       stage,
       error: text || "انتشار ناموفق بود.",
       releaseId,
@@ -1630,6 +1642,9 @@ export async function runDeployProject(
       buildLogTail: read.buildLogTail,
       pendingCard: text.includes("شناسهٔ تأیید") ? text : undefined,
     }, deps, typeof structured["code"] === "string" ? structured["code"] : "DEPLOY_FAILED");
+    if (!envCard) return explained;
+    const explainedText = textOf(explained);
+    return result(`${envCard}\n${explainedText}`, (explained.structuredContent ?? {}) as Record<string, unknown>);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return explainAndReturn({

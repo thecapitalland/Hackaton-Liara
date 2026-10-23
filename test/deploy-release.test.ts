@@ -24,6 +24,16 @@ test('build.location منطقهٔ بیلد است، نه مسیر سورس', () 
   assert.ok(!('dockerfile' in (body.build as Record<string, unknown>)));
 });
 
+test('دیسک غایب در بدنهٔ release نیست', () => {
+  const body = buildReleaseBody(
+    detection({ disks: [{ name: 'data', mountTo: '/app/data' }] }),
+    'src_1',
+    'iran',
+    [],
+  );
+  assert.equal('disks' in body, false);
+});
+
 test('dockerfile فقط برای docker اضافه می‌شود', () => {
   const body = buildReleaseBody(detection({ platform: 'docker' }), 'src_1');
   assert.equal((body.build as Record<string, unknown>).dockerfile, 'Dockerfile');

@@ -4,6 +4,7 @@
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
+import dotenv from "dotenv";
 
 export type Platform = "node" | "docker" | "python" | "static" | "unknown";
 
@@ -103,6 +104,42 @@ export function scanEnvUsage(files: string[]): string[] {
     }
   }
   return [...found].sort();
+}
+
+const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * کلید و مقدار `.env` پروژه. فقط برای ساخت کارت است.
+ * `dotenv.config` صدا زده نمی‌شود تا مقدار وارد process.env این فرایند نشود.
+ */
+export function readDotEnv(root: string): { key: string; value: string }[] {
+  const file = path.join(root, ".env");
+  if (!existsSync(file)) return [];
+  let text = "";
+  try {
+    text = readFileSync(file, "utf8").replace(/^\uFEFF/, "");
+  } catch {
+    return [];
+  }
+  const parsed = dotenv.parse(text);
+  return Object.entries(parsed)
+    .filter(([key]) => ENV_KEY.test(key))
+    .map(([key, value]) => ({ key, value }))
+    .sort((a, b) => a.key.localeCompare(b.key));
+}
+
+/**
+ * فهرست کارت env: کلیدهای کد و `.env.example` به‌علاوهٔ کلیدهای `.env`.
+ * PORT و NODE_ENV را لیارا خودش می‌گذارد. MODE اگر در هر کدام باشد می‌ماند.
+ * مقدار فقط برای کلیدهای غیرخالی برمی‌گردد تا متن کارت بتواند جدا «تنظیم‌شده» بگوید.
+ */
+export function envRowsForCard(root: string, requiredEnv: readonly string[]): { key: string; value: string }[] {
+  const fromFile = readDotEnv(root);
+  const values = new Map(fromFile.map((row) => [row.key, row.value]));
+  const names = [...new Set([...requiredEnv, ...fromFile.map((row) => row.key)])]
+    .filter((key) => key !== "PORT" && key !== "NODE_ENV" && ENV_KEY.test(key))
+    .sort((a, b) => a.localeCompare(b));
+  return names.map((key) => ({ key, value: values.get(key) ?? "" }));
 }
 
 /** کلیدهای .env.example */

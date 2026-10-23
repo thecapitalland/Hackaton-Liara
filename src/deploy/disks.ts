@@ -54,6 +54,17 @@ export function releaseDiskField(disks: readonly { name: string; mountTo: string
   return disks.map((disk) => ({ name: disk.name, mountTo: disk.mountTo }));
 }
 
+/**
+ * mountهایی که واقعاً در بدنهٔ release می‌روند.
+ * دیسک بدون size که روی اپ نیست حذف می‌شود: deploy.js آن را می‌فرستد و لیارا
+ * `disk_not_found` برمی‌گرداند. اندازه اینجا ساخته نمی‌شود.
+ */
+export function releasableDisks(plan: DiskMountPlan): ReleaseDisk[] {
+  return plan.releaseDisks.filter(
+    (disk) => !plan.blocked.some((blocked) => blocked.name === disk.name && blocked.mountTo === disk.mountTo),
+  );
+}
+
 /** بدنهٔ POST ساخت. create.js:20 فقط name و size دارد؛ mountTo در این POST نیست. */
 export function diskCreateBody(disk: { name: string; size: string }): { name: string; size: string } {
   return { name: disk.name, size: disk.size };

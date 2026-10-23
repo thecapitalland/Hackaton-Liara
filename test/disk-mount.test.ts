@@ -15,6 +15,7 @@ import {
   parseRemoteDisks,
   planDiskMounts,
   releaseDiskField,
+  releasableDisks,
 } from "../src/deploy/disks.js";
 import { buildReleaseBody } from "../src/tools/composite.js";
 
@@ -51,6 +52,7 @@ test("دیسک موجود mount می‌شود و دیسک بدون size کارت
   assert.equal(ready.releaseDisks[0]?.mountTo, "/var/data");
 
   const missing = planDiskMounts([{ name: "cache", mountTo: "/cache" }], remote ?? []);
+  assert.deepEqual(releasableDisks(missing), []);
   assert.deepEqual(missing.creates, []);
   const card = missingDiskSizeCard(missing.blocked);
   assert.equal(card.structured["code"], "DISK_SIZE_REQUIRED");
