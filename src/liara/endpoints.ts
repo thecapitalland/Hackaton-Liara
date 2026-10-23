@@ -11,7 +11,11 @@ const enc = encodeURIComponent;
 export const EP = {
   /* ── حساب و پروژه‌ها ─────────────────────────────────────────────── */
   listProjects: "/v1/projects",
-  createProject: "/v1/projects",
+  /**
+   * POST ساخت اپ. اسلش آخر از @liara/cli@9.6.0 package/lib/commands/app/create.js:36
+   * (`v1/projects/`). فهرست اپ در list.js:8 بدون اسلش است و همین listProjects می‌ماند.
+   */
+  createProject: "/v1/projects/",
   getProject: (name: string) => `/v1/projects/${enc(name)}`,
   /** فقط endpoint پلن‌ها: GET /v1/me → plans */
   me: "/v1/me",

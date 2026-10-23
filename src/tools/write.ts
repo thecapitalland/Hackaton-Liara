@@ -31,6 +31,7 @@ import { parsePlans } from "./read.js";
 import { assertPreflight } from '../liara/preflight-gate.js';
 import { redact } from '../redact.js';
 import { quoteCreate, assertQuoteUnchanged, quoteDisk, assertDiskQuoteUnchanged, type DiskQuote } from '../liara/plans.js';
+import { createAppBody } from '../liara/create-app.js';
 import { applyChosenPlan, describeCreatePlan, readPlanErrorCode, explainPlanError, type PlanChoiceItem } from '../liara/plan-choice.js';
 import { replacementForCreateResult } from '../liara/plan-followup.js';
 import { detectStack } from "../deploy/detect.js";
@@ -435,7 +436,15 @@ registerAction({
     const planID = String(p["planID"] ?? "");
     const platform = String(p["platform"] ?? "node");
     const bundlePlanID = String(p["bundlePlanID"] ?? "");
-    const body: Record<string, unknown> = { name, planID, platform, ...(bundlePlanID ? { bundlePlanID } : {}), ...(p.network ? {network:p.network} : {}) };
+    const readOnly = p["readOnlyRootFilesystem"];
+    const body = createAppBody({
+      name,
+      planID,
+      platform,
+      bundlePlanID,
+      networkId: typeof p["network"] === "string" ? p["network"] : undefined,
+      readOnlyRootFilesystem: typeof readOnly === "boolean" ? readOnly : undefined,
+    });
     try {
       const { data } = await liaraPost<Record<string, unknown>>(EP.createProject, body);
       const id = (data ?? {})["projectID"] ?? (data ?? {})["id"] ?? name;

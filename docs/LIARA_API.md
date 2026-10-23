@@ -9,7 +9,7 @@ Auth: `Authorization: Bearer <LIARA_API_TOKEN>`; append `teamID=<id>` when confi
 | Method | Path | Purpose / request |
 |---|---|---|
 | GET | `/v1/projects` | List apps |
-| POST | `/v1/projects` | Live-verified create: `{name,planID,platform,bundlePlanID,network}` — all five accepted together; returns `{projectID}` |
+| POST | `/v1/projects/` | CLI `create.js:36-44`: `{name,planID,platform,bundlePlanID,network,readOnlyRootFilesystem}`. `network` is `network._id` (`base.js:211-217`). No `region`. Undefined keys are omitted by JSON.stringify. An earlier live create succeeded on `/v1/projects` without the trailing slash; the code now follows the CLI path. |
 | GET | `/v1/projects/{name}` | Project details |
 | GET | `/v1/me` | Account + `plans.projects`, `plans.projectBundlePlans` (CLI reference; no separate plans endpoint) |
 | POST | `/v2/projects/{name}/sources` | multipart `file` tar.gz, ≤256 MiB; `{sourceID}` |

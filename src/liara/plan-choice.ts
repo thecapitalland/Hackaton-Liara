@@ -169,7 +169,7 @@ export function readPlanErrorCode(body: unknown): string | null {
 
 export function explainPlanError(planID: string, code: string): string {
   if (code === "g2_plan_unavailable") {
-    return `لیارا پلن «${planID}» را برای ساخت اپ نپذیرفت، چون همین حالا برای ساخت در دسترس نیست. ساخت دوباره خودکار انجام نشد.`;
+    return `لیارا ساخت را با کد g2_plan_unavailable رد کرد. این خطا ممکن است از شکل درخواست باشد، نه از خود پلن «${planID}». این پلن از پیشنهاد بعدی برداشته شد و ساخت دوباره خودکار انجام نشد.`;
   }
   if (code === "free_plan_platform") {
     return `لیارا پلن رایگان را برای این پلتفرم نپذیرفت. ساخت دوباره خودکار انجام نشد.`;

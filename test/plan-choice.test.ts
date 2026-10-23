@@ -87,6 +87,8 @@ test("خطای پلن کارت جایگزین می‌سازد و همان پلن
   const body = { statusCode: 400, message: "g2_plan_unavailable", data: { code: "g2_plan_unavailable" } };
   assert.equal(readPlanErrorCode(body), "g2_plan_unavailable");
   const follow = presentReplacement(pairs(), "small-g2", "basic", "g2_plan_unavailable", emptyNeed);
+  assert.match(follow.explanationFa, /شکل درخواست/);
+  assert.match(follow.explanationFa, /نه از خود پلن/);
   assert.match(follow.explanationFa, /خودکار انجام نشد/);
   assert.equal(follow.presentation?.recommended.planID, "medium-g2");
   assert.equal(excludeRejectedPlan(pairs(), "small-g2", "basic", "g2_plan_unavailable").some((pair) => pair.planID === "small-g2"), false);
@@ -160,6 +162,7 @@ test("خطای g2_plan_unavailable فقط یک POST می‌زند و کارت ج
     JSON.stringify({ connection: connectionDigest(), ready: true, ranAt: new Date().toISOString() }),
   );
   const methods: string[] = [];
+  let posted = "";
   const original = globalThis.fetch;
   setElicitor(async (_summary, choices) => {
     const recommended = choices.find((choice) => choice.recommended);
@@ -170,6 +173,7 @@ test("خطای g2_plan_unavailable فقط یک POST می‌زند و کارت ج
     const method = init?.method ?? "GET";
     methods.push(`${method} ${url.pathname}`);
     if (method === "POST") {
+      posted = String(init?.body ?? "");
       return new Response(
         JSON.stringify({ statusCode: 400, message: "g2_plan_unavailable", data: { code: "g2_plan_unavailable" } }),
         { status: 400 },
@@ -182,9 +186,16 @@ test("خطای g2_plan_unavailable فقط یک POST می‌زند و کارت ج
   try {
     const out = await ensureApp("plan-choice-app", "node");
     assert.equal(out.code, "APPROVAL_REQUIRED");
+    assert.match(out.note ?? "", /شکل درخواست/);
     assert.match(out.note ?? "", /خودکار انجام نشد/);
     assert.match(out.note ?? "", /medium-g2/);
-    assert.equal(methods.filter((line) => line.startsWith("POST")).length, 1);
+    assert.deepEqual(methods.filter((line) => line.startsWith("POST")), ["POST /v1/projects/"]);
+    assert.deepEqual(JSON.parse(posted), {
+      name: "plan-choice-app",
+      planID: "small-g2",
+      platform: "node",
+      bundlePlanID: "basic",
+    });
   } finally {
     globalThis.fetch = original;
     setElicitor(null);
@@ -253,8 +264,9 @@ test("execute_action بعد از رد پلن قوی‌تر فقط یک POST می
     const text = out.content[0]?.type === "text" ? out.content[0].text : "";
     assert.equal(structured["rejectedPlanID"], stronger.pair.planID);
     assert.notEqual(structured["replacementPlanID"], stronger.pair.planID);
+    assert.match(text, /شکل درخواست/);
     assert.match(text, /خودکار انجام نشد/);
-    assert.equal(methods.filter((line) => line.startsWith("POST")).length, 1);
+    assert.deepEqual(methods.filter((line) => line.startsWith("POST")), ["POST /v1/projects/"]);
   } finally {
     globalThis.fetch = original;
     if (previousState === undefined) delete process.env["AGATE_STATE_DIR"];
