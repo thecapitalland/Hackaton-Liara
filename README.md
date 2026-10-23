@@ -62,12 +62,12 @@
 | بررسی | نتیجه | شاهد |
 |---|---|---|
 | `npm run typecheck` | **PASS** | `tsc -p tsconfig.json --noEmit` |
-| `npm test` | **PASS — 141/141** | 0 failed · شامل summary-memory، owned apps، projectPath، سقف بایتی و رد crash_loop |
+| `npm test` | **PASS — 142/142** | 0 failed · شامل summary-memory، owned apps، projectPath، سقف بایتی، رد crash_loop و هم‌خوانی `docs/TOOLS.md` |
 | `npm run build` | **PASS** | `dist` بازسازی شد |
 | `npm run smoke -- --offline` | **PASS** | stdio handshake واقعی، کشف **۳۴ ابزار**، ping |
 | `npm run smoke` | **خواندن لیارا PASS؛ GapGPT در این فرآیند FAIL** | list و HTTP probe قبل از شکست PASS شدند. `dns.lookup` همین فرآیند برای `api.gapgpt.app` هنوز loopback است و IP دستی اضافه نشد. curl همان نام میزبان با resolver سیستم HTTP 200 داد |
 | `npm run demo:test` | **PASS — 8/8** | health، slow، error500، leak، POST ادمین، رد query string |
-| `npm run secret-scan` | **PASS** | **۱۰۲ فایل** قابل commit؛ کلید تنظیم‌شده/private-key marker یافت نشد (detector عمومی نیست) |
+| `npm run secret-scan` | **PASS** | **۱۰۴ فایل** قابل commit؛ کلید تنظیم‌شده/private-key marker یافت نشد (detector عمومی نیست) |
 | `node dist/index.js --help` | **PASS** | command/args/cwd، متغیرها و خلاصهٔ اقدام قابل‌بازگشت |
 | `git diff --check` | **PASS** | فقط هشدارهای line-ending ویندوز |
 
@@ -272,6 +272,8 @@ error500 راهکار `restart` گرفت چون فهرست مجاز همان inc
 | ترکیبی | `deploy_project`, `diagnose`, `apply_fix`, `verify_fix`, `connect_domain`, `watch_after_deploy`, `watch_app` |
 | C: راهنما | `guide_domain_registration`, `guide_rollback`, `guide_github_deploy` |
 
+مرجع ورودی، خروجی، ریسک و اثر هر ابزار در [docs/TOOLS.md](docs/TOOLS.md) است. تست `tools-doc` نام‌های آن سند را با `registerTool` یکی نگه می‌دارد.
+
 `http_probe(target, path="/health", count=3)` فقط HTTPS دامنه‌های متصل به اپ‌های مجاز را می‌پذیرد و redirect را دنبال نمی‌کند. `diagnose` علاوه بر متریک و لاگ، صفحهٔ `/` را می‌سنجد تا سلامت `/health` خطای صفحهٔ اصلی را پنهان نکند. گزارش diagnose بخش **مسیر بررسی** دارد؛ در حالت agentic هر قدم ابزار، دلیل مدل و خلاصهٔ نتیجه است و در حالت fixed می‌گوید مسیر قاعده‌ای استفاده شده. جزئیات بودجه و allowlist در «طراحی قابل گسترش» است. بازهٔ شواهد و رویدادها **۱۰ دقیقه حول زمان رخداد** است و رویداد قدیمی‌تر یا بدون timestamp معتبر کنار گذاشته می‌شود. `verify_fix` نبودن لاگ یا baseline معتبر را موفقیت گزارش نمی‌کند.
 
 ## پایش مداوم
@@ -349,6 +351,7 @@ npm run install:cursor
 
 ## مستندات
 
+- [مرجع ابزارهای MCP](docs/TOOLS.md)
 - [شواهد تست و تأیید](docs/TEST_EVIDENCE.md)
 - [رجیستری API لیارا و اختلاف‌های واقعی](docs/LIARA_API.md)
 - [محدودیت‌ها و وضعیت صادقانه](docs/LIMITATIONS.md)
