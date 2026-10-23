@@ -9,6 +9,7 @@ import { z } from "zod";
 import { config } from "../config.js";
 import { liaraGet } from "../liara/client.js";
 import { EP } from "../liara/endpoints.js";
+import { logsV2Query, metricsSince } from "../liara/queries.js";
 import { httpProbe } from "../probe.js";
 import { redact } from "../redact.js";
 import type { Evidence, EventItem, Hypothesis, InvestigationStep, LogLine, PlanLimits, ProbeResult, RemedyKind, Series } from "../types.js";
@@ -456,10 +457,9 @@ async function defaultExecuteTool(
   }
   if (name === "liara_logs") {
     const sinceMinutes = clampNumber(args["sinceMinutes"], 10, 1, 30);
-    const since = new Date(Date.now() - sinceMinutes * 60_000).toISOString();
     let raw: unknown;
     try {
-      raw = (await liaraGet<unknown>(EP.logsV2(app), { timeoutMs, query: { start: since, direction: "forward", last_lines: 80 } })).data;
+      raw = (await liaraGet<unknown>(EP.logsV2(app), { timeoutMs, query: logsV2Query(Date.now() - sinceMinutes * 60_000, 80) })).data;
     } catch {
       raw = (await liaraGet<unknown>(EP.logsV1(app), { timeoutMs, query: { since: Date.now() - sinceMinutes * 60_000 } })).data;
     }
@@ -478,7 +478,7 @@ async function defaultExecuteTool(
   }
   if (name === "liara_metrics") {
     const sinceMinutes = clampNumber(args["sinceMinutes"], 30, 1, 60);
-    const since = Date.now() - sinceMinutes * 60_000;
+    const since = metricsSince(Date.now(), sinceMinutes * 60_000);
     const [cpuRes, memoryRes] = await Promise.allSettled([
       liaraGet<unknown>(EP.metricsCpu(app), { timeoutMs, query: { since } }),
       liaraGet<unknown>(EP.metricsMemory(app), { timeoutMs, query: { since } }),

@@ -342,6 +342,19 @@ async function defaultCallModel(model: string, messages: { role: string; content
   return postJson("/chat/completions", { model, messages }, timeoutMs);
 }
 
+/** همان مسیر HTTP تشخیص: Jev روی /systemone و مدل روی /chat/completions. */
+export function callJevEndpoint(body: Record<string, unknown>, timeoutMs: number): Promise<unknown> {
+  return defaultCallJev(body, timeoutMs);
+}
+
+export function callChatEndpoint(
+  model: string,
+  messages: { role: string; content: string }[],
+  timeoutMs: number,
+): Promise<unknown> {
+  return defaultCallModel(model, messages, timeoutMs);
+}
+
 async function postJson(pathname: string, body: Record<string, unknown>, timeoutMs: number): Promise<unknown> {
   await assertPublicHostname(config.llmBaseUrl);
   const controller = new AbortController();

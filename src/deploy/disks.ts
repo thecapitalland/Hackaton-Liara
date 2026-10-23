@@ -15,6 +15,8 @@
  *   package/lib/types/get-disk-response.d.ts:1-15
  *     disks[].name و disks[].size ؛ mounts[].mountedTo فیلد release نیست و فرستاده نمی‌شود.
  */
+import { liaraGet } from "../liara/client.js";
+import { EP } from "../liara/endpoints.js";
 import type { DiskMount } from "./detect.js";
 
 export interface ReleaseDisk {
@@ -60,6 +62,18 @@ export function diskCreateBody(disk: { name: string; size: string }): { name: st
 /**
  * disks.disks طبق init.js:262. اگر این شکل نباشد null است و هیچ ساختی انجام نمی‌شود.
  */
+/**
+ * فهرست دیسک را با شناسهٔ داخلی پروژه می‌خواند.
+ * init.js:260 از project._id استفاده می‌کند؛ GET با نام اپ پاسخ ۵۰۰ می‌دهد.
+ */
+export async function fetchProjectDisks(app: string) {
+  const { data } = await liaraGet<Record<string, unknown>>(EP.getProject(app));
+  const project = ((data?.["project"] ?? data) ?? {}) as Record<string, unknown>;
+  const id = typeof project["_id"] === "string" ? project["_id"].trim() : "";
+  if (!id) throw new Error("شناسهٔ داخلی پروژه برای خواندن دیسک‌ها پیدا نشد. فهرست دیسک خوانده نشد.");
+  return liaraGet(EP.listDisks(id));
+}
+
 export function parseRemoteDisks(payload: unknown): RemoteDisk[] | null {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   const rows = (payload as { disks?: unknown }).disks;

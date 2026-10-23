@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -52,7 +54,9 @@ test('مقصد و مسیر ناامن پروب رد می‌شود', async () => 
 
 test('deploy_project روی اپ موجود هم تأیید جداگانه می‌گیرد', async () => {
   const token = process.env.LIARA_API_TOKEN;
+  const state = process.env.AGATE_STATE_DIR;
   process.env.LIARA_API_TOKEN = 'test-only-token-not-live';
+  process.env.AGATE_STATE_DIR = path.join(tmpdir(), `agate-safety-${Date.now()}`);
   const original = globalThis.fetch;
   const methods: string[] = [];
   globalThis.fetch = async (_url, init) => { methods.push(init?.method ?? 'GET'); return new Response(JSON.stringify({project:{envs:[]}}),{status:200}); };
@@ -67,6 +71,7 @@ test('deploy_project روی اپ موجود هم تأیید جداگانه می�
   } finally {
     globalThis.fetch = original;
     if (token === undefined) delete process.env.LIARA_API_TOKEN; else process.env.LIARA_API_TOKEN=token;
+    if (state === undefined) delete process.env.AGATE_STATE_DIR; else process.env.AGATE_STATE_DIR=state;
     await client.close(); await server.close();
   }
 });

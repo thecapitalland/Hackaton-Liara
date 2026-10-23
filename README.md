@@ -62,7 +62,7 @@
 | بررسی | نتیجه | شاهد |
 |---|---|---|
 | `npm run typecheck` | **PASS** | `tsc -p tsconfig.json --noEmit` |
-| `npm test` | **PASS — 158/158** | 0 failed · شامل summary-memory، owned apps، projectPath، سقف بایتی، رد crash_loop، هم‌خوانی `docs/TOOLS.md`، mount دیسک از CLI، انتخاب پلن ساخت، هم‌شکلی بدنهٔ ساخت اپ با CLI و پیشنهاد شبکه قبل از ساخت |
+| `npm test` | **PASS — 167/167** | 0 failed · شامل summary-memory، owned apps، projectPath، سقف بایتی، رد crash_loop، هم‌خوانی `docs/TOOLS.md`، mount دیسک از CLI، انتخاب پلن ساخت، هم‌شکلی بدنهٔ ساخت اپ با CLI، پیشنهاد شبکه قبل از ساخت، و تشخیص خطای preflight در deploy |
 | `npm run build` | **PASS** | `dist` بازسازی شد |
 | `npm run smoke -- --offline` | **PASS** | stdio handshake واقعی، کشف **۳۴ ابزار**، ping |
 | `npm run smoke` | **خواندن لیارا PASS؛ GapGPT در این فرآیند FAIL** | list و HTTP probe قبل از شکست PASS شدند. `dns.lookup` همین فرآیند برای `api.gapgpt.app` هنوز loopback است و IP دستی اضافه نشد. curl همان نام میزبان با resolver سیستم HTTP 200 داد |

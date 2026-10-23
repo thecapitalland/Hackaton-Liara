@@ -12,6 +12,7 @@ Auth: `Authorization: Bearer <LIARA_API_TOKEN>`; append `teamID=<id>` when confi
 | POST | `/v1/projects/` | CLI `create.js:36-44`: `{name,planID,platform,bundlePlanID,network,readOnlyRootFilesystem}`. `network` is `network._id` (`base.js:211-217`). No `region`. Undefined keys are omitted by JSON.stringify. An earlier live create succeeded on `/v1/projects` without the trailing slash; the code now follows the CLI path. |
 | GET | `/v1/projects/{name}` | Project details |
 | GET | `/v1/me` | Account + `plans.projects`, `plans.projectBundlePlans` (CLI reference; no separate plans endpoint) |
+| GET | `/v1/networks` | CLI `base.js:186`. Preflight reads this list. Create still sends `network._id` |
 | POST | `/v2/projects/{name}/sources` | multipart `file` tar.gz, ≤256 MiB; `{sourceID}` |
 | POST | `/v2/projects/{name}/releases` | `{sourceID,port,type,build,...}` و، وقتی `liara.json` دیسک دارد، `disks:[{name,mountTo}]` از `@liara/cli@9.6.0` `deploy.js:264`; `{releaseID}` |
 | GET | `/v1/releases/{releaseID}` | Release polling (CLI reference) |
@@ -21,14 +22,16 @@ Auth: `Authorization: Bearer <LIARA_API_TOKEN>`; append `teamID=<id>` when confi
 | POST | `/v1/projects/update-envs` | `{project,variables:[{key,value}]}`; full-list replacement + restart; read/merge/write required |
 | POST | `/v1/projects/{name}/actions/restart` | Restart |
 | POST | `/v1/projects/{name}/actions/scale` | `{scale:0\|1}` |
+| GET | `/v1/projects/{project._id}/disks` | CLI `init.js:260`. GET with the app name returned 500; GET with `_id` returned `{disks, mounts}` |
+| POST | `/v1/projects/{app}/disks` | CLI `disk/create.js:20` uses the app name and `{name, size}` |
 | POST | `/v1/projects/{name}/resize` | `{planID}` |
 | POST | `/v1/projects/update-port` | CLI reference; no public tool yet |
-| GET | `/v1/projects/{name}/logs?since=<ts>` | v1 logs |
-| GET | `/v2/projects/{name}/logs?start=&direction=forward&last_lines=&releaseId=` | CLI logs reference, polling |
+| GET | `/v1/projects/{name}/logs?since=<ms>` | v1 logs. Live preflight accepts a millisecond timestamp |
+| GET | `/v2/projects/{name}/logs?start=<unix-seconds>&direction=forward&last_lines=<bool>` | CLI `logs.js:25-28` and `getStart` at `:222-225`. `start` is unix seconds, not an ISO string |
 | GET | `/v1/projects/{name}/events` | Events |
 | GET | `/v1/projects/{name}/metrics/summary` | Summary |
-| GET | `/v1/projects/{name}/metrics/cpu?since=<n>` | CPU series; units to confirm live |
-| GET | `/v1/projects/{name}/metrics/memory?since=<n>` | RAM series; units to confirm live |
+| GET | `/v1/projects/{name}/metrics/cpu?since=<unix-seconds>` | CPU series. `since: 30` is older than the 7-day cap. A millisecond timestamp returned 503. Unix seconds returned `{end, result}` |
+| GET | `/v1/projects/{name}/metrics/memory?since=<unix-seconds>` | RAM series. Same `since` unit as CPU |
 | GET | `/v1/projects/{name}/metrics/network-receive`, `/network-transmit` | Network; no standalone tool yet |
 | GET | `/v1/domains?project=<app>` | Domains |
 | POST | `/v1/domains` | `{name,project,type:"PROJECT"}` |

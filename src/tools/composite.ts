@@ -12,6 +12,10 @@ import { config, isAllowedApp } from "../config.js";
 import { fa } from "../i18n/fa.js";
 import { liaraGet, liaraPost, uploadSource, LiaraError } from "../liara/client.js";
 import { EP } from "../liara/endpoints.js";
+import { logsV2Query, metricsSince } from "../liara/queries.js";
+import { readPreflightGate } from "../liara/preflight-gate.js";
+import { runReadOnlyPreflight, type PreflightReport } from "../liara/preflight-run.js";
+import { explainDeployFailure, type DeployEvidence } from "../diagnose/deploy-failure.js";
 import { unwrapRelease } from "../liara/release.js";
 import { investigateAgentic, summarizeForModel, type AgenticInvestigation, type AgenticToolResult } from "../diagnose/agentic.js";
 import { decideIncident } from "../diagnose/decision.js";
@@ -45,6 +49,7 @@ import {
   formatDiskCard,
   missingDiskSizeCard,
   mountsAreAuthorized,
+  fetchProjectDisks,
   parseRemoteDisks,
   planDiskMounts,
   releaseDiskField,
@@ -206,7 +211,7 @@ async function prepareAuthorizedDisks(
   authorized: DeployDiskAuthorization | undefined,
 ): Promise<{ stopped?: DeployOutcome; note?: string }> {
   if (!local.length) return {};
-  const listed = await liaraGet(EP.listDisks(app));
+  const listed = await fetchProjectDisks(app);
   const remote = parseRemoteDisks(listed.data);
   if (!remote) {
     return {
@@ -376,7 +381,7 @@ export async function ensureApp(
   bundlePlanID?: string,
   network?: string,
   projectPath?: string,
-): Promise<{ app: string; created: boolean; planID?: string; note?: string; code?: string }> {
+): Promise<{ app: string; created: boolean; planID?: string; note?: string; code?: string; failure?: boolean }> {
   try {
     await liaraGet(EP.getProject(app));
     return { app, created: false };
@@ -389,6 +394,7 @@ export async function ensureApp(
     return {
       app,
       created: false,
+      failure: true,
       code: "NETWORK_REQUIRED",
       note: "فهرست شبکه‌ها از v1/networks خوانده نشد. ساخت اپ پست نشد.",
     };
@@ -397,6 +403,7 @@ export async function ensureApp(
     return {
       app,
       created: false,
+      failure: true,
       code: "NETWORK_REQUIRED",
       note: `شبکهٔ «${resolved.given}» در فهرست v1/networks نیست. ساخت اپ پست نشد.`,
     };
@@ -406,6 +413,7 @@ export async function ensureApp(
       return {
         app,
         created: false,
+        failure: true,
         code: "NETWORK_REQUIRED",
         note: "شبکه‌ای در فهرست نیست و نام اپ برای ساخت شبکه کوتاه است. ساخت اپ پست نشد.",
       };
@@ -416,6 +424,7 @@ export async function ensureApp(
     return {
       app,
       created: false,
+      failure: true,
       code: "NETWORK_REQUIRED",
       note: [
         "فهرست شبکهٔ خصوصی خالی است. ساخت اپ پست نشد.",
@@ -430,6 +439,7 @@ export async function ensureApp(
     return {
       app,
       created: false,
+      failure: true,
       code: "NETWORK_REQUIRED",
       note: `چند شبکه هست و شبکهٔ اپ موجود مشخص نشد. ساخت اپ پست نشد.\n${lines.join("\n")}`,
     };
@@ -440,6 +450,7 @@ export async function ensureApp(
     return {
       app,
       created: false,
+      failure: true,
       code: "PLAN_SELECTION_REQUIRED",
       note: "⚠️ هیچ پلن مجازی برای ساخت اپ در فیلتر CLI (free یا شامل g2، available، منطقهٔ ایران) با قیمت واقعی پیدا نشد.",
     };
@@ -482,6 +493,7 @@ export async function ensureApp(
     return {
       app,
       created: false,
+      failure: true,
       code: String(followStructured["code"] ?? "PLAN_REJECTED"),
       note: followText,
     };
@@ -491,6 +503,7 @@ export async function ensureApp(
     app,
     created: false,
     planID: presentation.recommended.planID,
+    failure: structured["code"] !== "APPROVAL_REQUIRED",
     code: structured["code"] === "APPROVAL_REQUIRED" ? "APPROVAL_REQUIRED" : "PLAN_SELECTION_REQUIRED",
     note: text,
   };
@@ -681,11 +694,7 @@ async function gatherDiagnosis(
   } else {
     try {
       const res = await liaraGet<unknown>(EP.logsV2(app), {
-        query: {
-          start: new Date(anchorMs - windowMinutes * 60_000).toISOString(),
-          direction: "forward",
-          last_lines: 300,
-        },
+        query: logsV2Query(anchorMs - windowMinutes * 60_000, 300),
       });
       logs = parseLogs(res.data);
     } catch {
@@ -730,8 +739,8 @@ async function gatherDiagnosis(
   let memory: Series | null = options.memory !== undefined ? options.memory : null;
   if (options.cpu === undefined || options.memory === undefined) {
     const [cpuRes, memRes] = await Promise.allSettled([
-      liaraGet<unknown>(EP.metricsCpu(app), { query: { since: anchorMs - 30 * 60_000 } }),
-      liaraGet<unknown>(EP.metricsMemory(app), { query: { since: anchorMs - 30 * 60_000 } }),
+      liaraGet<unknown>(EP.metricsCpu(app), { query: { since: metricsSince(anchorMs) } }),
+      liaraGet<unknown>(EP.metricsMemory(app), { query: { since: metricsSince(anchorMs) } }),
     ]);
     if (options.cpu === undefined) {
       if (cpuRes.status === "fulfilled") cpu = parseSeries(cpuRes.value.data, "cpu", "%");
@@ -1471,6 +1480,165 @@ export async function runDiagnosis(
 
 /* ─────────────────────────── ثبت ابزارها ─────────────────────────── */
 
+export interface DeployProjectDeps {
+  stateDir?: string;
+  runPreflight?: () => Promise<PreflightReport>;
+  useModel?: boolean;
+}
+
+function textOf(res: { content?: { type?: string; text?: string }[] }): string {
+  return res.content?.find((item) => item.type === "text")?.text ?? "";
+}
+
+function isApprovalPending(text: string, code: unknown): boolean {
+  return code === "APPROVAL_REQUIRED" || text.includes("نیاز به تأیید");
+}
+
+/** کارت اول ساخت یا deploy توضیح جدا نمی‌خواهد. شکست شبکه، پلن یا دیسک می‌خواهد. */
+export function shouldExplainEnsureStop(stop: { note?: string; code?: string; failure?: boolean }): boolean {
+  if (!stop.note) return false;
+  if (!stop.failure && isApprovalPending(stop.note, stop.code)) return false;
+  return true;
+}
+
+function failureStage(code: string | undefined): DeployEvidence["stage"] {
+  if (code === "NETWORK_REQUIRED") return "network";
+  if (code?.startsWith("DISK_")) return "disk";
+  if (code === "PLAN_SELECTION_REQUIRED" || code === "PLAN_REJECTED" || code === "APPROVAL_REQUIRED") return "create_app";
+  return "deploy";
+}
+
+/** مرحلهٔ خطای نتیجهٔ deploy. کارت اول ساخت اپ این تابع را نمی‌بیند. */
+export function deployStopStage(structured: Record<string, unknown>): DeployEvidence["stage"] {
+  const code = typeof structured["code"] === "string" ? structured["code"] : "";
+  if (code.startsWith("DISK_")) return "disk";
+  if (structured["stage"] === "build") return "build";
+  if (structured["health"] === false) return "deploy";
+  if (typeof structured["releaseID"] === "string") return "release";
+  return "deploy";
+}
+
+async function explainAndReturn(
+  evidence: DeployEvidence,
+  deps: DeployProjectDeps,
+  code: string,
+): Promise<ReturnType<typeof result>> {
+  const explained = await explainDeployFailure(evidence, { useModel: deps.useModel !== false });
+  return result(explained.text, {
+    ok: false,
+    code,
+    cause: explained.cause,
+    layer: explained.layer,
+    next: explained.next,
+    ...(evidence.probes?.length ? { failedChecks: evidence.probes.map((probe) => probe.name) } : {}),
+  });
+}
+
+async function readBuildEvidence(releaseId: string): Promise<{ releaseStatus?: string; buildLogTail?: string[] }> {
+  let releaseStatus: string | undefined;
+  let buildLogTail: string[] | undefined;
+  try {
+    const release = await liaraGet<unknown>(EP.getRelease(releaseId));
+    releaseStatus = releaseState(release.data).status;
+  } catch {
+    /* خواندن وضعیت release ممکن است جداگانه خطا بدهد */
+  }
+  try {
+    const logs = await liaraGet<unknown>(EP.buildLogs(releaseId), {
+      query: { since: Math.floor((Date.now() - 10 * 60_000) / 1000) },
+    });
+    const tail = parseLogs(logs.data).map((line) => line.message).filter(Boolean).slice(-8);
+    if (tail.length) buildLogTail = tail;
+  } catch {
+    /* لاگ بیلد ممکن است هنوز نرسیده باشد */
+  }
+  return { releaseStatus, buildLogTail };
+}
+
+/**
+ * اگر رسید preflight نیست، منقضی است، یا ready نیست، همان بررسی خواندنی اجرا می‌شود.
+ * رد شدن آن یا خطای بعدی deploy به لایهٔ تشخیص می‌رود و نوشتنی تازه نمی‌سازد.
+ */
+export async function runDeployProject(
+  input: {
+    projectPath?: string;
+    path?: string;
+    app?: string;
+    planID?: string;
+    bundlePlanID?: string;
+    network?: string;
+  },
+  deps: DeployProjectDeps = {},
+): Promise<ReturnType<typeof result>> {
+  try {
+    const gate = readPreflightGate(Date.now(), deps.stateDir);
+    if (!gate.ok) {
+      const report = await (deps.runPreflight ?? (() => runReadOnlyPreflight(deps.stateDir ? { stateDir: deps.stateDir } : {})))();
+      if (!report.ready) {
+        const probes = report.probes
+          .filter((probe) => !probe.ok)
+          .map((probe) => ({ name: probe.name, status: probe.status, error: probe.error }));
+        return explainAndReturn({
+          stage: "preflight",
+          error: probes.map((probe) => `${probe.name}: ${probe.status ?? "—"} ${probe.error ?? ""}`).join("\n")
+            || `رسید preflight آماده نیست (${gate.reason}).`,
+          probes,
+        }, deps, "PREFLIGHT_FAILED");
+      }
+    }
+
+    const folder = resolveProjectPath(input.projectPath || input.path || "");
+    const app = input.app || "agate-liara";
+    let exists = false;
+    try {
+      await liaraGet(EP.getProject(app));
+      exists = true;
+    } catch (error) {
+      if (!(error instanceof LiaraError) || error.status !== 404) throw error;
+    }
+    if (exists && !isAllowedApp(app)) {
+      return result(fa.appNotAllowed(app, config.allowedApps), {
+        ok: false,
+        code: "APP_NOT_ALLOWLISTED",
+      });
+    }
+    const detection = detectStack(folder, app);
+    const ensured = await ensureApp(app, detection.platform, input.planID, input.bundlePlanID, input.network, folder);
+    if (ensured.note) {
+      const code = ensured.code ?? (ensured.note.includes("نیاز به تأیید") ? "APPROVAL_REQUIRED" : "PLAN_SELECTION_REQUIRED");
+      if (!shouldExplainEnsureStop({ note: ensured.note, code, failure: ensured.failure })) {
+        return result(ensured.note, { ok: false, code });
+      }
+      return explainAndReturn({
+        stage: failureStage(code),
+        error: ensured.note,
+        pendingCard: ensured.note.includes("شناسهٔ تأیید") ? ensured.note : undefined,
+      }, deps, code);
+    }
+    const outcome = await runGuardedAction("liara_deploy", { app, path: folder });
+    const text = textOf(outcome.res);
+    const structured = (outcome.res.structuredContent ?? {}) as Record<string, unknown>;
+    if (structured["ok"] === true || isApprovalPending(text, structured["code"])) return outcome.res;
+    const releaseId = typeof structured["releaseID"] === "string" ? structured["releaseID"] : undefined;
+    const stage = deployStopStage(structured);
+    const read = stage === "build" && releaseId ? await readBuildEvidence(releaseId) : {};
+    return explainAndReturn({
+      stage,
+      error: text || "انتشار ناموفق بود.",
+      releaseId,
+      releaseStatus: read.releaseStatus ?? (typeof structured["status"] === "string" ? structured["status"] : undefined),
+      buildLogTail: read.buildLogTail,
+      pendingCard: text.includes("شناسهٔ تأیید") ? text : undefined,
+    }, deps, typeof structured["code"] === "string" ? structured["code"] : "DEPLOY_FAILED");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return explainAndReturn({
+      stage: /preflight/i.test(message) ? "preflight" : "deploy",
+      error: message,
+    }, deps, "DEPLOY_FAILED");
+  }
+}
+
 export function registerCompositeTools(server: McpServer): void {
   /* ── deploy_project ──────────────────────────────────────────────── */
   server.registerTool(
@@ -1478,7 +1646,7 @@ export function registerCompositeTools(server: McpServer): void {
     {
       title: "استقرار کامل پروژه روی لیارا",
       description:
-        "تشخیص استک پروژه → (در صورت نبود اپ) ساخت اپ با انتخاب پلن → بسته‌بندی و آپلود سورس → انتشار → پیگیری بیلد → بررسی سلامت آدرس زنده.",
+        "اگر رسید preflight نباشد یا منقضی باشد، اول همان بررسی خواندنی را اجرا می‌کند. سپس تشخیص استک، ساخت اپ با کارت، انتشار و سلامت. خطای ساخت، دیسک، شبکه، release یا بیلد به لایهٔ تشخیص می‌رود. نوشتن بدون کارت انجام نمی‌شود و امتحان دوباره فقط برای خواندن است.",
       inputSchema: {
         projectPath: z.string().optional().describe("مسیر مطلق پوشهٔ پروژه"),
         path: z.string().optional().describe("نام قدیمی projectPath؛ باید مطلق باشد"),
@@ -1489,42 +1657,8 @@ export function registerCompositeTools(server: McpServer): void {
       },
       annotations: COMPOSITE_ANNOTATIONS,
     },
-    async ({ path: src, projectPath, app, planID, bundlePlanID, network }) => {
-      try {
-        const folder = resolveProjectPath(projectPath || src || "");
-        let exists = false;
-        try {
-          await liaraGet(EP.getProject(app));
-          exists = true;
-        } catch (error) {
-          if (!(error instanceof LiaraError) || error.status !== 404) throw error;
-        }
-        if (exists && !isAllowedApp(app)) {
-          return result(fa.appNotAllowed(app, config.allowedApps), {
-            ok: false,
-            code: "APP_NOT_ALLOWLISTED",
-          });
-        }
-        const detection = detectStack(folder, app);
-        const ensured = await ensureApp(app, detection.platform, planID, bundlePlanID, network, folder);
-        if (ensured.note) {
-          return result(ensured.note, {
-            ok: false,
-            code: ensured.code ?? (ensured.note.includes("نیاز به تأیید") ? "APPROVAL_REQUIRED" : "PLAN_SELECTION_REQUIRED"),
-          });
-        }
-        if (ensured.created) {
-          // ادامه با ساخت اپ
-        }
-        const outcome = await runGuardedAction('liara_deploy', { app, path: folder });
-        return outcome.res;
-      } catch (err) {
-        return result(`❌ استقرار ناموفق بود: ${(err as Error).message}`, {
-          ok: false,
-          code: "DEPLOY_FAILED",
-        });
-      }
-    },
+    async ({ path: src, projectPath, app, planID, bundlePlanID, network }) =>
+      runDeployProject({ path: src, projectPath, app, planID, bundlePlanID, network }),
   );
 
   /* ── diagnose ────────────────────────────────────────────────────── */
@@ -1727,8 +1861,8 @@ export function registerCompositeTools(server: McpServer): void {
       if (!baseline || baseline.incidentId !== incidentId) return result('❌ baseline متناظر رخداد پیدا نشد؛ diagnose را اجرا کنید.', { ok: false });
       const probe = await httpProbe(app, { path: new URL(baseline.probe.url || `https://${app}.liara.run/`).pathname, count: 3 });
       const [cpuRes, memRes] = await Promise.allSettled([
-        liaraGet<unknown>(EP.metricsCpu(app), { query: { since: Date.now() - 15 * 60_000 } }),
-        liaraGet<unknown>(EP.metricsMemory(app), { query: { since: Date.now() - 15 * 60_000 } }),
+        liaraGet<unknown>(EP.metricsCpu(app), { query: { since: metricsSince(Date.now(), 15 * 60_000) } }),
+        liaraGet<unknown>(EP.metricsMemory(app), { query: { since: metricsSince(Date.now(), 15 * 60_000) } }),
       ]);
       const cpu = cpuRes.status === "fulfilled" ? parseSeries(cpuRes.value.data, "cpu", "%") : null;
       const memory = memRes.status === "fulfilled" ? parseSeries(memRes.value.data, "memory", "MB") : null;
@@ -1738,11 +1872,7 @@ export function registerCompositeTools(server: McpServer): void {
       let logsNow: LogLine[] = [];
       try {
         const res = await liaraGet<unknown>(EP.logsV2(app), {
-          query: {
-            start: new Date(Math.max(Date.parse(baseline.observedAt), Date.now() - 5 * 60_000)).toISOString(),
-            direction: "forward",
-            last_lines: 100,
-          },
+          query: logsV2Query(Math.max(Date.parse(baseline.observedAt), Date.now() - 5 * 60_000), 100),
         });
         logsNow = parseLogs(res.data);
         errorsNow = baseline.errorPattern ? logsNow.filter(l => new RegExp(baseline.errorPattern!, 'i').test(l.message)).length : logsNow.filter(l => l.level === 'error').length;

@@ -9,6 +9,7 @@ import { config, hasToken } from "../config.js";
 import { fa } from "../i18n/fa.js";
 import { liaraGet, liaraRequest } from "../liara/client.js";
 import { EP } from "../liara/endpoints.js";
+import { logsV2Query, metricsSince } from "../liara/queries.js";
 import { parseEvents, parseLogs, parseSeries, slope } from "../diagnose/detectors.js";
 import { httpProbe, probeSummary } from "../probe.js";
 import { readAuditTail } from "../audit.js";
@@ -225,12 +226,11 @@ export function registerReadTools(server: McpServer): void {
     },
     async ({ app, sinceMinutes, lines, level }) =>
       audited("liara_logs", app, { app, sinceMinutes, lines, level }, async () => {
-        const since = new Date(Date.now() - sinceMinutes * 60_000).toISOString();
         let raw: unknown;
         let source = "v2";
         try {
           const res = await liaraGet<unknown>(EP.logsV2(app), {
-            query: { start: since, direction: "forward", last_lines: lines },
+            query: logsV2Query(Date.now() - sinceMinutes * 60_000, lines),
           });
           raw = res.data;
         } catch {
@@ -294,13 +294,13 @@ export function registerReadTools(server: McpServer): void {
       audited("liara_metrics", app, { app, sinceMinutes }, async () => {
         const results = await Promise.allSettled([
           liaraGet<unknown>(EP.metricsCpu(app), {
-            query: { since: Date.now() - sinceMinutes * 60_000 },
+            query: { since: metricsSince(Date.now(), sinceMinutes * 60_000) },
           }),
           liaraGet<unknown>(EP.metricsMemory(app), {
-            query: { since: Date.now() - sinceMinutes * 60_000 },
+            query: { since: metricsSince(Date.now(), sinceMinutes * 60_000) },
           }),
           liaraGet<unknown>(EP.metricsSummary(app), {
-            query: { since: Date.now() - sinceMinutes * 60_000 },
+            query: { since: metricsSince(Date.now(), sinceMinutes * 60_000) },
           }),
         ]);
 

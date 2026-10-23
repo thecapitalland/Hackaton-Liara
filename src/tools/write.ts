@@ -36,6 +36,7 @@ import { applyChosenPlan, describeCreatePlan, readPlanErrorCode, explainPlanErro
 import { replacementForCreateResult } from '../liara/plan-followup.js';
 import { detectStack } from "../deploy/detect.js";
 import {
+  fetchProjectDisks,
   formatDiskCard,
   missingDiskSizeCard,
   parseRemoteDisks,
@@ -530,7 +531,7 @@ registerAction({
     }
     const local = detectStack(folder).disks ?? [];
     if (!local.length) return;
-    const listed = await liaraGet(EP.listDisks(String(p["app"] ?? "")));
+    const listed = await fetchProjectDisks(String(p["app"] ?? ""));
     const remote = parseRemoteDisks(listed.data);
     if (!remote) {
       return {
